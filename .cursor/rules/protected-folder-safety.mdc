@@ -1,0 +1,32 @@
+---
+description: Safety rules for protected-folder encryption and sync
+globs: src/protect/**/*.ts,src/sync/**/*.ts,src/settings.ts,src/main.ts
+alwaysApply: false
+---
+
+# Protected folder safety
+
+One optional vault folder can be password-protected. Markdown notes inside are encrypted when locked; S3 must never receive their plaintext.
+
+## Crypto
+
+- AES-256-GCM + PBKDF2-SHA256 (310k iterations)
+- Envelope text starts with `ZYNCENC1` (version, salt, nonce, ciphertext)
+- Never persist password or derived key — only salt + verifier blobs in settings
+- Key lives in memory only while unlocked (`ProtectedFolderManager`)
+
+## Sync rules
+
+- Before upload: `bytesForUpload` / `assertSafeToUpload` — refuse plaintext for protected paths
+- After download: keep ciphertext on disk if locked; decrypt only if unlocked
+- Hash/compare the **encrypted** payload so unlock/lock mtime churn does not false-trigger uploads
+- Deterministic nonce (path + content) so unchanged plaintext does not re-upload every sync
+
+## Multi-device
+
+Settings are local. Second device: **Connect & unlock** (or Enable when encrypted notes already exist) adopts salt from envelopes — do not mint a new salt over synced ciphertext.
+
+## File ops
+
+- Atomic writes via `.zync-partial`; `recoverPartials` must never promote a partial over a valid encrypted target
+- Only `.md` under the chosen folder is protected

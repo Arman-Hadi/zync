@@ -1,0 +1,22 @@
+---
+description: Keep .agents and Cursor rules/skills in sync when authoring agent docs
+alwaysApply: true
+---
+
+# Dual-write agent docs
+
+When adding or changing **rules** or **skills** in this repo, write **both** layouts:
+
+| Kind | Canonical (`.agents`) | Cursor |
+| --- | --- | --- |
+| Rule | `.agents/rules/<name>.md` | `.cursor/rules/<name>.mdc` (YAML frontmatter + same body) |
+| Skill | `.agents/skills/<name>/SKILL.md` | Same tree via `.cursor/skills` → symlink to `.agents/skills` |
+
+## Requirements
+
+1. Prefer editing the `.agents` copy first, then mirror into Cursor.
+2. Keep rule/skill **names** aligned across trees (`protected-folder-safety` ↔ `protected-folder-safety.mdc`).
+3. Cursor rules need frontmatter (`description`, `alwaysApply` and/or `globs`). Do not put that frontmatter in `.agents/rules` unless a non-Cursor agent needs it.
+4. Skill `SKILL.md` frontmatter (`name`, `description`) is shared; one file serves both via the skills symlink.
+5. Do not create skills only under `~/.cursor/skills-cursor/` (Cursor-managed).
+6. If you add a new agent folder (`.claude/skills`, etc.), symlink it to `.agents/skills` instead of duplicating.
