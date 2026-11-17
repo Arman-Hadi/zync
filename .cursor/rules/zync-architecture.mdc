@@ -32,6 +32,9 @@ Zync is an Obsidian community plugin: two-way vault sync over S3-compatible stor
 
 ## Constraints
 
-- `.obsidian` and `.trash` are always ignored — plugin settings are **per device**, not synced by Zync.
-- Networking must stay on `requestUrl` + Web Crypto (mobile-safe). No Node `fs` / `http` in runtime plugin code.
-- Build: `npm run build` → `main.js` (esbuild). Release: tag push → `.github/workflows/release.yml`.
+- Vault config dir (`Vault#configDir`, not a hardcoded `.obsidian`) and `.trash` are always ignored — plugin settings are **per device**, not synced by Zync.
+- Networking must stay on `requestUrl` + Web Crypto (mobile-safe). No Node `http` in runtime plugin code.
+- Desktop-only exception: protected-folder quit flush may use Node `fs` via `Platform.isDesktop` + `window.require?.("fs")` (never bare `require("fs")` / `path`; join paths manually). Disclose in README.
+- `minAppVersion` is **1.13.0+**: settings are `getSettingDefinitions()` only (no `display()`). Do not call APIs newer than `minAppVersion` without raising it.
+- Prefer `window.setTimeout` / `clearTimeout` and `activeDocument` for popout compatibility. Avoid success `console.info`; keep error logs sparse.
+- Build: `npm run build` → `main.js` (esbuild). Lint: `npm run lint` (eslint-plugin-obsidianmd). Release: tag push → `.github/workflows/release.yml`.
