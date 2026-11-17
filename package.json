@@ -1,6 +1,6 @@
 {
   "name": "zync",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Two-way Obsidian vault sync over S3-compatible storage (desktop + mobile)",
   "main": "main.js",
   "scripts": {

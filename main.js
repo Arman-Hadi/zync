@@ -142,13 +142,15 @@ async function hashArrayBuffer(data) {
 
 // src/s3/client.ts
 var S3Error = class extends Error {
-  constructor(message, status, body) {
+  constructor(message, status) {
     super(message);
     this.status = status;
-    this.body = body;
     this.name = "S3Error";
   }
 };
+function s3Fail(action, status) {
+  return new S3Error(`S3 ${action} failed (${status})`, status);
+}
 function trimSlashes(s) {
   return s.replace(/^\/+|\/+$/g, "");
 }
@@ -241,7 +243,7 @@ var S3Client = class {
     });
     const res = await this.signedRequest("GET", url);
     if (res.status >= 300) {
-      throw new S3Error(`S3 list failed (${res.status})`, res.status, res.text);
+      throw s3Fail("list", res.status);
     }
   }
   async listAll() {
@@ -259,7 +261,7 @@ var S3Client = class {
       const url = this.listUrl(params);
       const res = await this.signedRequest("GET", url);
       if (res.status >= 300) {
-        throw new S3Error(`S3 list failed (${res.status})`, res.status, res.text);
+        throw s3Fail("list", res.status);
       }
       const xml = res.text;
       const contents = [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)];
@@ -295,7 +297,7 @@ var S3Client = class {
       throw new S3Error("Not found", 404);
     }
     if (res.status >= 300) {
-      throw new S3Error(`S3 get failed (${res.status})`, res.status, res.text);
+      throw s3Fail("get", res.status);
     }
     const headers = lowerHeaders(res.headers);
     return {
@@ -314,7 +316,7 @@ var S3Client = class {
       "x-amz-meta-zync-hash": meta.hash
     });
     if (res.status >= 300) {
-      throw new S3Error(`S3 put failed (${res.status})`, res.status, res.text);
+      throw s3Fail("put", res.status);
     }
     const headers = lowerHeaders(res.headers);
     return { etag: (headers["etag"] || "").replace(/"/g, "") };
@@ -324,7 +326,7 @@ var S3Client = class {
     const url = this.objectUrl(key);
     const res = await this.signedRequest("DELETE", url);
     if (res.status >= 300 && res.status !== 404) {
-      throw new S3Error(`S3 delete failed (${res.status})`, res.status, res.text);
+      throw s3Fail("delete", res.status);
     }
   }
   async headObject(path) {
@@ -333,7 +335,7 @@ var S3Client = class {
     const res = await this.signedRequest("HEAD", url);
     if (res.status === 404) return null;
     if (res.status >= 300) {
-      throw new S3Error(`S3 head failed (${res.status})`, res.status, res.text);
+      throw s3Fail("head", res.status);
     }
     const headers = lowerHeaders(res.headers);
     return {
@@ -779,11 +781,11 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("zync-settings");
-    containerEl.createEl("h2", { text: "Zync" });
     containerEl.createEl("p", {
-      text: "Two-way vault sync over S3-compatible storage (AWS S3, Cloudflare R2, MinIO, Backblaze B2, \u2026). Works on desktop and mobile."
+      text: "Two-way vault sync over S3-compatible storage (AWS S3, Cloudflare R2, MinIO, Backblaze B2, and similar). Works on desktop and mobile."
     });
-    new import_obsidian3.Setting(containerEl).setName("Endpoint").setDesc("Leave empty for AWS S3. For R2/MinIO/B2 use the full HTTPS endpoint.").addText(
+    new import_obsidian3.Setting(containerEl).setName("Connection").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("Endpoint").setDesc("Leave empty for AWS S3. For R2, MinIO, or B2 use the full HTTPS endpoint.").addText(
       (text) => text.setPlaceholder("https://<account>.r2.cloudflarestorage.com").setValue(this.plugin.settings.endpoint).onChange(async (value) => {
         this.plugin.settings.endpoint = value.trim();
         await this.plugin.saveSettings();
@@ -820,12 +822,13 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Key prefix").setDesc("Optional folder prefix inside the bucket (e.g. my-vault).").addText(
+    new import_obsidian3.Setting(containerEl).setName("Key prefix").setDesc("Optional folder prefix inside the bucket (for example my-vault).").addText(
       (text) => text.setValue(this.plugin.settings.prefix).onChange(async (value) => {
         this.plugin.settings.prefix = value.trim().replace(/^\/+|\/+$/g, "");
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian3.Setting(containerEl).setName("Sync").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Sync interval (minutes)").setDesc("0 = manual only.").addText(
       (text) => text.setPlaceholder("5").setValue(String(this.plugin.settings.syncIntervalMinutes)).onChange(async (value) => {
         const n = Number(value);
@@ -848,14 +851,14 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
       area.inputEl.rows = 4;
       area.inputEl.style.width = "100%";
     });
-    new import_obsidian3.Setting(containerEl).setName("Test connection").setDesc("List one object from the bucket to verify credentials.").addButton(
+    new import_obsidian3.Setting(containerEl).setName("Test connection").setDesc("List objects in the bucket to verify credentials.").addButton(
       (btn) => btn.setButtonText("Test").onClick(async () => {
         btn.setDisabled(true);
         try {
           await this.plugin.testConnection();
           new import_obsidian3.Notice("Zync: connection OK");
         } catch (e) {
-          new import_obsidian3.Notice(`Zync: connection failed \u2014 ${String(e)}`);
+          new import_obsidian3.Notice(`Zync: connection failed \u2014 ${errMessage(e)}`);
         } finally {
           btn.setDisabled(false);
         }
@@ -868,6 +871,10 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
   }
 };
+function errMessage(e) {
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
 
 // src/main.ts
 var ZyncPlugin = class extends import_obsidian4.Plugin {
@@ -907,7 +914,9 @@ var ZyncPlugin = class extends import_obsidian4.Plugin {
           await this.testConnection();
           new import_obsidian4.Notice("Zync: connection OK");
         } catch (e) {
-          new import_obsidian4.Notice(`Zync: connection failed \u2014 ${String(e)}`);
+          new import_obsidian4.Notice(
+            `Zync: connection failed \u2014 ${e instanceof Error ? e.message : String(e)}`
+          );
         }
       }
     });
@@ -940,9 +949,10 @@ var ZyncPlugin = class extends import_obsidian4.Plugin {
     );
     this.resetInterval();
     if (this.settings.syncOnLoad) {
-      window.setTimeout(() => {
+      const t = window.setTimeout(() => {
         void this.runSync(false);
       }, 2500);
+      this.register(() => window.clearTimeout(t));
     }
   }
   onunload() {

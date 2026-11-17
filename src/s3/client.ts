@@ -6,11 +6,14 @@ export class S3Error extends Error {
   constructor(
     message: string,
     public status: number,
-    public body?: string,
   ) {
     super(message);
     this.name = "S3Error";
   }
+}
+
+function s3Fail(action: string, status: number): S3Error {
+  return new S3Error(`S3 ${action} failed (${status})`, status);
 }
 
 function trimSlashes(s: string): string {
@@ -121,7 +124,7 @@ export class S3Client {
     });
     const res = await this.signedRequest("GET", url);
     if (res.status >= 300) {
-      throw new S3Error(`S3 list failed (${res.status})`, res.status, res.text);
+      throw s3Fail("list", res.status);
     }
   }
 
@@ -142,7 +145,7 @@ export class S3Client {
       const url = this.listUrl(params);
       const res = await this.signedRequest("GET", url);
       if (res.status >= 300) {
-        throw new S3Error(`S3 list failed (${res.status})`, res.status, res.text);
+        throw s3Fail("list", res.status);
       }
 
       const xml = res.text;
@@ -190,7 +193,7 @@ export class S3Client {
       throw new S3Error("Not found", 404);
     }
     if (res.status >= 300) {
-      throw new S3Error(`S3 get failed (${res.status})`, res.status, res.text);
+      throw s3Fail("get", res.status);
     }
     const headers = lowerHeaders(res.headers);
     return {
@@ -216,7 +219,7 @@ export class S3Client {
       "x-amz-meta-zync-hash": meta.hash,
     });
     if (res.status >= 300) {
-      throw new S3Error(`S3 put failed (${res.status})`, res.status, res.text);
+      throw s3Fail("put", res.status);
     }
     const headers = lowerHeaders(res.headers);
     return { etag: (headers["etag"] || "").replace(/"/g, "") };
@@ -227,7 +230,7 @@ export class S3Client {
     const url = this.objectUrl(key);
     const res = await this.signedRequest("DELETE", url);
     if (res.status >= 300 && res.status !== 404) {
-      throw new S3Error(`S3 delete failed (${res.status})`, res.status, res.text);
+      throw s3Fail("delete", res.status);
     }
   }
 
@@ -243,7 +246,7 @@ export class S3Client {
     const res = await this.signedRequest("HEAD", url);
     if (res.status === 404) return null;
     if (res.status >= 300) {
-      throw new S3Error(`S3 head failed (${res.status})`, res.status, res.text);
+      throw s3Fail("head", res.status);
     }
     const headers = lowerHeaders(res.headers);
     return {

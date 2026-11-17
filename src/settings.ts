@@ -14,14 +14,15 @@ export class ZyncSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("zync-settings");
 
-    containerEl.createEl("h2", { text: "Zync" });
     containerEl.createEl("p", {
-      text: "Two-way vault sync over S3-compatible storage (AWS S3, Cloudflare R2, MinIO, Backblaze B2, …). Works on desktop and mobile.",
+      text: "Two-way vault sync over S3-compatible storage (AWS S3, Cloudflare R2, MinIO, Backblaze B2, and similar). Works on desktop and mobile.",
     });
+
+    new Setting(containerEl).setName("Connection").setHeading();
 
     new Setting(containerEl)
       .setName("Endpoint")
-      .setDesc("Leave empty for AWS S3. For R2/MinIO/B2 use the full HTTPS endpoint.")
+      .setDesc("Leave empty for AWS S3. For R2, MinIO, or B2 use the full HTTPS endpoint.")
       .addText((text) =>
         text
           .setPlaceholder("https://<account>.r2.cloudflarestorage.com")
@@ -85,13 +86,15 @@ export class ZyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Key prefix")
-      .setDesc("Optional folder prefix inside the bucket (e.g. my-vault).")
+      .setDesc("Optional folder prefix inside the bucket (for example my-vault).")
       .addText((text) =>
         text.setValue(this.plugin.settings.prefix).onChange(async (value) => {
           this.plugin.settings.prefix = value.trim().replace(/^\/+|\/+$/g, "");
           await this.plugin.saveSettings();
         }),
       );
+
+    new Setting(containerEl).setName("Sync").setHeading();
 
     new Setting(containerEl)
       .setName("Sync interval (minutes)")
@@ -134,7 +137,7 @@ export class ZyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Test connection")
-      .setDesc("List one object from the bucket to verify credentials.")
+      .setDesc("List objects in the bucket to verify credentials.")
       .addButton((btn) =>
         btn.setButtonText("Test").onClick(async () => {
           btn.setDisabled(true);
@@ -142,7 +145,7 @@ export class ZyncSettingTab extends PluginSettingTab {
             await this.plugin.testConnection();
             new Notice("Zync: connection OK");
           } catch (e) {
-            new Notice(`Zync: connection failed — ${String(e)}`);
+            new Notice(`Zync: connection failed — ${errMessage(e)}`);
           } finally {
             btn.setDisabled(false);
           }
@@ -160,4 +163,9 @@ export class ZyncSettingTab extends PluginSettingTab {
           }),
       );
   }
+}
+
+function errMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

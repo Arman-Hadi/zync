@@ -1,72 +1,73 @@
 # Zync
 
-Two-way Obsidian vault sync over **S3-compatible** storage. Same plugin build works on **desktop and mobile**.
+Two-way Obsidian vault sync over **S3-compatible** storage. One plugin build works on **desktop and mobile**.
 
-No VPS required. Point Zync at Cloudflare R2, AWS S3, Backblaze B2, MinIO, or any SigV4 S3 API.
+Works with Cloudflare R2, AWS S3, Backblaze B2, MinIO, and other SigV4 S3 APIs. No VPS required.
 
-## Layout
+## Features
 
-This repo lives at `~/w/obsidian-sync/zync`. Sibling folders under `~/w/obsidian-sync/` (notes, secrets, etc.) are intentionally **outside** git.
+- Manual sync (ribbon + command) and optional interval / sync-on-load
+- Upload, download, and delete propagation across devices
+- Conflict copies when both sides edited the same file
+- Ignore globs (`.obsidian` and `.trash` are always skipped)
+- Mobile-safe networking via Obsidian `requestUrl` + Web Crypto SigV4
 
-## Install (dev)
+## Install
 
-1. `npm install`
-2. `npm run build` (or `npm run dev` while editing)
-3. Copy or symlink these files into your vault:
+### From Community plugins (after approval)
 
-```
-<vault>/.obsidian/plugins/zync/
-  manifest.json
-  main.js
-  styles.css
-```
+Settings → Community plugins → Browse → search **Zync** → Install → Enable.
 
-4. Enable **Community plugins** → enable **Zync**.
-5. Open Zync settings, enter bucket credentials, **Test connection**, then **Sync**.
+### Manual / BRAT
 
-### Mobile
+1. Create `<vault>/.obsidian/plugins/zync/`
+2. Copy `manifest.json`, `main.js`, and `styles.css` from a [GitHub release](https://github.com/Arman-Hadi/zync/releases)
+3. Enable **Zync** under Community plugins
 
-Obsidian mobile loads community plugins from the vault’s `.obsidian/plugins` folder. After building on your laptop, copy `manifest.json`, `main.js`, and `styles.css` into that folder on the phone (USB, cloud folder, or by syncing `.obsidian/plugins/zync` once with another method). Then enable Zync and use the same S3 settings.
+## Setup
 
-## Settings
+1. Create an S3-compatible bucket and keys with list/get/put/delete.
+2. Open **Settings → Zync**.
+3. Enter endpoint, region, bucket, and keys.
+4. Click **Test connection**, then **Sync**.
 
-| Field | Notes |
-| --- | --- |
-| Endpoint | Empty for AWS. Full HTTPS URL for R2 / MinIO / B2 |
-| Region | e.g. `auto`, `us-east-1`, or your AWS region |
-| Bucket | Bucket name |
-| Access / secret key | IAM or provider keys with list/get/put/delete |
-| Force path-style | On for MinIO and many compatible APIs |
-| Key prefix | Optional vault root inside the bucket |
-| Sync interval | Minutes; `0` = manual only |
-| Ignore patterns | Extra globs (`.obsidian` / `.trash` always skipped) |
+Use the **same** bucket settings on every device.
+
+### Provider tips
+
+| Provider | Endpoint | Region | Path-style |
+| --- | --- | --- | --- |
+| Cloudflare R2 | `https://<accountid>.r2.cloudflarestorage.com` | `auto` | try either |
+| AWS S3 | *(leave empty)* | your region | usually off |
+| MinIO | your MinIO HTTPS URL | e.g. `us-east-1` | **on** |
+| Backblaze B2 | S3 endpoint from B2 | B2 region | usually on |
+
+Optional **key prefix** lets several vaults share one bucket.
 
 ## How sync works
 
-- Compares local vault files with remote objects under your prefix
-- Uploads / downloads / deletes as needed
-- Propagates deletes via tombstones across devices
-- If both sides changed the same file: renames local to `name (conflict YYYYMMDD-HHMM).ext` and downloads remote
+- Compares local files with remote objects under your prefix
+- Uploads newer/missing local files; downloads newer/missing remote files
+- Propagates deletes via tombstones
+- If both sides changed the same path: renames local to `name (conflict YYYYMMDD-HHMM).ext` and downloads remote
 
-Objects are stored as plain files in the bucket (no E2E encryption in v0.1).
-
-## Provider tips
-
-- **Cloudflare R2:** endpoint `https://<accountid>.r2.cloudflarestorage.com`, region `auto`, path-style on or off both usually work — if listing fails, toggle path-style.
-- **AWS S3:** leave endpoint empty, set region, path-style usually off.
-- **MinIO:** set endpoint to your MinIO URL, path-style **on**.
+**Privacy:** files are stored in your bucket in plain form (no end-to-end encryption in v1). Credentials stay in the vault’s plugin data (`data.json`) on each device.
 
 ## Commands
 
-- Ribbon: refresh icon → sync now
+- Ribbon refresh icon → sync now
 - Command palette: **Zync: Sync now**, **Zync: Test S3 connection**
 
 ## Develop
 
 ```bash
-cd ~/w/obsidian-sync/zync
 npm install
-npm run dev
+npm run dev    # watch build → main.js
+npm run build  # production build
 ```
 
-Reload Obsidian (or disable/enable the plugin) after rebuilds.
+Reload Obsidian (or toggle the plugin) after rebuilds.
+
+## License
+
+MIT

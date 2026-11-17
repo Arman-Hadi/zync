@@ -49,7 +49,9 @@ export default class ZyncPlugin extends Plugin {
           await this.testConnection();
           new Notice("Zync: connection OK");
         } catch (e) {
-          new Notice(`Zync: connection failed — ${String(e)}`);
+          new Notice(
+            `Zync: connection failed — ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
       },
     });
@@ -90,9 +92,10 @@ export default class ZyncPlugin extends Plugin {
 
     if (this.settings.syncOnLoad) {
       // Defer so the vault finishes loading
-      window.setTimeout(() => {
+      const t = window.setTimeout(() => {
         void this.runSync(false);
       }, 2500);
+      this.register(() => window.clearTimeout(t));
     }
   }
 
