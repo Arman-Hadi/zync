@@ -6,6 +6,10 @@
   width: 100%;
 }
 
+.zync-settings .setting-item-control input[type="password"] {
+  width: 8rem;
+}
+
 .zync-status-ok {
   color: var(--text-success);
 }

@@ -5,12 +5,15 @@ import { MetaStore } from "./local/meta-store";
 import { SyncEngine } from "./sync/engine";
 import { ZyncSettingTab } from "./settings";
 import { applyTombstone } from "./sync/planner";
+import { ProtectedFolderManager } from "./protect/manager";
+import { UnlockModal } from "./protect/unlock-modal";
 
 export default class ZyncPlugin extends Plugin {
   settings: ZyncSettings = { ...DEFAULT_SETTINGS };
   private meta!: MetaStore;
   private s3!: S3Client;
   private engine!: SyncEngine;
+  protection!: ProtectedFolderManager;
   private intervalId: number | null = null;
   private statusEl: HTMLElement | null = null;
 
@@ -20,6 +23,13 @@ export default class ZyncPlugin extends Plugin {
     this.meta = new MetaStore(this);
     await this.meta.load();
 
+    this.protection = new ProtectedFolderManager(
+      this.app,
+      () => this.settings,
+      async () => this.saveSettings(),
+    );
+    await this.protection.recoverPartials();
+
     this.s3 = new S3Client(this.settings);
     this.engine = new SyncEngine(
       this.app,
@@ -27,6 +37,7 @@ export default class ZyncPlugin extends Plugin {
       this.s3,
       this.meta,
       async (state) => this.persistState(state),
+      this.protection,
     );
 
     this.addRibbonIcon("refresh-cw", "Zync: sync now", async () => {
@@ -53,6 +64,60 @@ export default class ZyncPlugin extends Plugin {
             `Zync: connection failed — ${e instanceof Error ? e.message : String(e)}`,
           );
         }
+      },
+    });
+
+    this.addCommand({
+      id: "lock-protected-folder",
+      name: "Lock protected folder",
+      callback: async () => {
+        try {
+          const result = await this.protection.lock();
+          if (result.errors.length) {
+            new Notice(`Zync: lock finished with errors — ${result.errors[0]}`);
+          } else {
+            new Notice(`Zync: locked (${result.encrypted} encrypted)`);
+          }
+        } catch (e) {
+          new Notice(`Zync: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      },
+    });
+
+    this.addCommand({
+      id: "unlock-protected-folder",
+      name: "Unlock protected folder",
+      callback: () => {
+        if (this.protection.isUnlocked()) {
+          new Notice("Zync: protected folder is already unlocked");
+          return;
+        }
+        const needsConnect = !this.protection.isConfigured();
+        new UnlockModal(
+          this.app,
+          async ({ password, folder }) => {
+            try {
+              if (needsConnect) {
+                const result = await this.protection.connectAndUnlock(
+                  folder ?? "",
+                  password,
+                );
+                new Notice(
+                  `Zync: connected & unlocked (${result.decrypted} decrypted)`,
+                );
+              } else {
+                const result = await this.protection.unlock(password);
+                new Notice(`Zync: unlocked (${result.decrypted} decrypted)`);
+              }
+            } catch (e) {
+              new Notice(`Zync: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          },
+          {
+            askFolder: needsConnect,
+            initialFolder: this.settings.protectedFolder,
+          },
+        ).open();
       },
     });
 
@@ -101,6 +166,8 @@ export default class ZyncPlugin extends Plugin {
 
   onunload() {
     this.clearInterval();
+    // Drop key material from memory
+    this.protection?.clearSession();
   }
 
   async loadSettings() {

@@ -9,6 +9,8 @@ import {
   writeBinary,
 } from "../local/vault-io";
 import type { MetaStore } from "../local/meta-store";
+import type { ProtectedFolderManager } from "../protect/manager";
+import { assertSafeToUpload } from "../protect/sync-guard";
 import type {
   FileMeta,
   SyncResult,
@@ -34,6 +36,7 @@ export class SyncEngine {
     private s3: S3Client,
     private meta: MetaStore,
     private persist: (state: SyncState) => Promise<void>,
+    private protection: ProtectedFolderManager,
   ) {}
 
   updateSettings(settings: ZyncSettings) {
@@ -74,18 +77,21 @@ export class SyncEngine {
 
     try {
       this.assertConfigured();
+      await this.protection.recoverPartials();
+
       let state = this.meta.get();
       const localFiles = listLocalFiles(this.app, this.settings.ignorePatterns);
       const remoteFiles = await this.s3.listAll();
 
-      // Enrich remote with HEAD metadata when list lacks user-meta (ListObjects doesn't return x-amz-meta)
-      // For v1 we rely on etag + optional head for conflict paths only; upload always writes meta.
-
+      // Hash the bytes that will be (or already are) on S3 — encrypted for protected notes.
       const localHashes: Record<string, string> = {};
+      const uploadBodies: Record<string, ArrayBuffer> = {};
       for (const f of localFiles) {
         try {
           const buf = await readBinary(this.app, f.path);
-          localHashes[f.path] = await hashArrayBuffer(buf);
+          const forRemote = await this.protection.bytesForUpload(f.path, buf);
+          uploadBodies[f.path] = forRemote;
+          localHashes[f.path] = await hashArrayBuffer(forRemote);
         } catch (e) {
           result.errors.push(`Hash ${f.path}: ${String(e)}`);
         }
@@ -103,7 +109,12 @@ export class SyncEngine {
       for (const action of actions) {
         try {
           if (action.type === "upload") {
-            state = await this.doUpload(state, action.path, localHashes[action.path]);
+            state = await this.doUpload(
+              state,
+              action.path,
+              localHashes[action.path],
+              uploadBodies[action.path],
+            );
             result.uploaded++;
           } else if (action.type === "download") {
             state = await this.doDownload(state, action.path);
@@ -154,8 +165,14 @@ export class SyncEngine {
     state: SyncState,
     path: string,
     hash?: string,
+    body?: ArrayBuffer,
   ): Promise<SyncState> {
-    const buf = await readBinary(this.app, path);
+    const buf = body ?? (await this.protection.bytesForUpload(path, await readBinary(this.app, path)));
+    assertSafeToUpload({
+      path,
+      protectedFolder: this.protection.getFolder(),
+      body: buf,
+    });
     const contentHash = hash ?? (await hashArrayBuffer(buf));
     const file = this.app.vault.getAbstractFileByPath(path);
     const mtime =
@@ -179,12 +196,14 @@ export class SyncEngine {
 
   private async doDownload(state: SyncState, path: string): Promise<SyncState> {
     const obj = await this.s3.getObject(path);
-    const hash = obj.metaHash ?? (await hashArrayBuffer(obj.body));
+    // Materialize may decrypt for an unlocked folder; hash must stay the remote (encrypted) hash.
+    const remoteHash = obj.metaHash ?? (await hashArrayBuffer(obj.body));
     const mtime = obj.metaMtime ?? Date.now();
-    await writeBinary(this.app, path, obj.body, mtime);
+    const toWrite = await this.protection.materializeDownload(path, obj.body);
+    await writeBinary(this.app, path, toWrite, mtime);
     const meta: FileMeta = {
       path,
-      hash,
+      hash: remoteHash,
       mtime,
       etag: obj.etag,
       size: obj.body.byteLength,

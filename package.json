@@ -1,12 +1,13 @@
 {
   "name": "zync",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Two-way Obsidian vault sync over S3-compatible storage (desktop + mobile)",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "typecheck": "tsc -noEmit -skipLibCheck"
+    "typecheck": "tsc -noEmit -skipLibCheck",
+    "test": "tsx --test src/**/*.test.ts"
   },
   "keywords": [
     "obsidian",
@@ -20,6 +21,7 @@
     "esbuild": "^0.25.1",
     "obsidian": "^1.8.7",
     "tslib": "^2.8.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.8.2"
   },
   "allowScripts": {

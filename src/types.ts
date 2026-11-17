@@ -9,6 +9,14 @@ export interface ZyncSettings {
   syncIntervalMinutes: number;
   syncOnLoad: boolean;
   ignorePatterns: string;
+  /** Vault-relative folder to protect (one folder). Empty = disabled. */
+  protectedFolder: string;
+  /** Hex PBKDF2 salt. Never store the password or derived key. */
+  protectedSalt: string;
+  /** Hex AES-GCM nonce for the password verifier blob. */
+  protectedVerifierNonce: string;
+  /** Hex AES-GCM ciphertext for the password verifier blob. */
+  protectedVerifierCipher: string;
 }
 
 export const DEFAULT_SETTINGS: ZyncSettings = {
@@ -22,6 +30,10 @@ export const DEFAULT_SETTINGS: ZyncSettings = {
   syncIntervalMinutes: 5,
   syncOnLoad: true,
   ignorePatterns: "",
+  protectedFolder: "",
+  protectedSalt: "",
+  protectedVerifierNonce: "",
+  protectedVerifierCipher: "",
 };
 
 export interface FileMeta {

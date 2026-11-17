@@ -97,9 +97,12 @@ function hashesMatch(prev: FileMeta, hash: string | undefined): boolean {
 }
 
 function changedLocally(prev: FileMeta, local: LocalFileInfo, hash: string | undefined): boolean {
-  if (hash && prev.hash && hash !== prev.hash) return true;
+  // Content hash is authoritative when both sides have one (e.g. after lock/unlock mtime churn).
+  if (hash && prev.hash) {
+    return hash !== prev.hash;
+  }
   if (Math.abs(local.mtime - prev.mtime) > SKEW_MS) return true;
-  if (local.size !== (prev.size ?? local.size) && hash && prev.hash && hash !== prev.hash) return true;
+  if (local.size !== (prev.size ?? local.size)) return true;
   return false;
 }
 

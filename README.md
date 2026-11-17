@@ -10,6 +10,7 @@ Works with Cloudflare R2, AWS S3, Backblaze B2, MinIO, and other SigV4 S3 APIs. 
 - Upload, download, and delete propagation across devices
 - Conflict copies when both sides edited the same file
 - Ignore globs (`.obsidian` and `.trash` are always skipped)
+- Optional **protected folder**: password-lock one folder; Markdown notes are AES-256-GCM encrypted on disk when locked and always encrypted in S3
 - Mobile-safe networking via Obsidian `requestUrl` + Web Crypto SigV4
 
 ## Install
@@ -51,12 +52,12 @@ Optional **key prefix** lets several vaults share one bucket.
 - Propagates deletes via tombstones
 - If both sides changed the same path: renames local to `name (conflict YYYYMMDD-HHMM).ext` and downloads remote
 
-**Privacy:** files are stored in your bucket in plain form (no end-to-end encryption in v1). Credentials stay in the vault’s plugin data (`data.json`) on each device.
+**Privacy:** by default, files are stored in your bucket in plain form. Notes inside an optional protected folder are encrypted with AES-256-GCM before upload (password never leaves the device). Credentials stay in the vault’s plugin data (`data.json`) on each device.
 
 ## Commands
 
 - Ribbon refresh icon → sync now
-- Command palette: **Zync: Sync now**, **Zync: Test S3 connection**
+- Command palette: **Zync: Sync now**, **Zync: Test S3 connection**, **Zync: Lock/Unlock protected folder**
 
 ## Develop
 
