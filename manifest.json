@@ -1,8 +1,8 @@
 {
   "id": "zync",
   "name": "Zync",
-  "version": "1.0.0",
-  "minAppVersion": "1.5.0",
+  "version": "1.0.1",
+  "minAppVersion": "1.6.6",
   "description": "Two-way sync your vault across devices via S3-compatible storage.",
   "author": "Arman Hadi",
   "authorUrl": "https://github.com/Arman-Hadi",

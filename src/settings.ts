@@ -1,5 +1,12 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import {
+  App,
+  Notice,
+  PluginSettingTab,
+  Setting,
+  type SettingDefinitionItem,
+} from "obsidian";
 import type ZyncPlugin from "./main";
+import type { ZyncSettings } from "./types";
 
 export class ZyncSettingTab extends PluginSettingTab {
   plugin: ZyncPlugin;
@@ -9,6 +16,160 @@ export class ZyncSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  getControlValue(key: string): unknown {
+    return (this.plugin.settings as unknown as Record<string, unknown>)[key];
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    const settings = this.plugin.settings as unknown as Record<string, unknown>;
+    if (key === "syncIntervalMinutes") {
+      const n = Number(value);
+      settings[key] = Number.isFinite(n) && n >= 0 ? n : 0;
+    } else if (
+      typeof value === "string" &&
+      (key === "endpoint" ||
+        key === "region" ||
+        key === "bucket" ||
+        key === "accessKeyId" ||
+        key === "prefix")
+    ) {
+      let next = value.trim();
+      if (key === "region" && !next) next = "auto";
+      if (key === "prefix") next = next.replace(/^\/+|\/+$/g, "");
+      settings[key] = next;
+    } else {
+      settings[key] = value;
+    }
+
+    await this.plugin.saveSettings();
+    if (key === "syncIntervalMinutes") {
+      this.plugin.resetInterval();
+    }
+  }
+
+  getSettingDefinitions(): SettingDefinitionItem<keyof ZyncSettings>[] {
+    const configDir = this.app.vault.configDir;
+    return [
+      {
+        name: "About",
+        desc: "Two-way vault sync over S3-compatible storage (AWS S3, Cloudflare R2, MinIO, Backblaze B2, and similar). Works on desktop and mobile.",
+      },
+      {
+        type: "group",
+        heading: "Connection",
+        items: [
+          {
+            name: "Endpoint",
+            desc: "Leave empty for AWS S3. For R2, MinIO, or B2 use the full HTTPS endpoint.",
+            control: {
+              type: "text",
+              key: "endpoint",
+              placeholder: "https://<account>.r2.cloudflarestorage.com",
+            },
+          },
+          {
+            name: "Region",
+            desc: "AWS region, or auto / us-east-1 for many S3-compatible providers.",
+            control: { type: "text", key: "region", placeholder: "auto" },
+          },
+          {
+            name: "Bucket",
+            control: { type: "text", key: "bucket" },
+          },
+          {
+            name: "Access key ID",
+            control: { type: "text", key: "accessKeyId" },
+          },
+          {
+            name: "Secret access key",
+            render: (setting) => {
+              setting.addText((text) => {
+                text.inputEl.type = "password";
+                text.setValue(this.plugin.settings.secretAccessKey).onChange(async (value) => {
+                  this.plugin.settings.secretAccessKey = value;
+                  await this.plugin.saveSettings();
+                });
+              });
+            },
+          },
+          {
+            name: "Force path-style URLs",
+            desc: "Recommended for MinIO and many S3-compatible endpoints.",
+            control: { type: "toggle", key: "forcePathStyle" },
+          },
+          {
+            name: "Key prefix",
+            desc: "Optional folder prefix inside the bucket (for example my-vault).",
+            control: { type: "text", key: "prefix" },
+          },
+        ],
+      },
+      {
+        type: "group",
+        heading: "Sync",
+        items: [
+          {
+            name: "Sync interval (minutes)",
+            desc: "0 = manual only.",
+            control: {
+              type: "number",
+              key: "syncIntervalMinutes",
+              min: 0,
+              placeholder: "5",
+            },
+          },
+          {
+            name: "Sync on load",
+            control: { type: "toggle", key: "syncOnLoad" },
+          },
+          {
+            name: "Ignore patterns",
+            desc: `One glob per line. ${configDir} and .trash are always skipped.`,
+            control: {
+              type: "textarea",
+              key: "ignorePatterns",
+              placeholder: "private/**\n*.tmp",
+              rows: 4,
+            },
+          },
+          {
+            name: "Test connection",
+            desc: "List objects in the bucket to verify credentials.",
+            render: (setting) => {
+              setting.addButton((btn) =>
+                btn.setButtonText("Test").onClick(async () => {
+                  btn.setDisabled(true);
+                  try {
+                    await this.plugin.testConnection();
+                    new Notice("Zync: connection OK");
+                  } catch (e) {
+                    new Notice(`Zync: connection failed — ${errMessage(e)}`);
+                  } finally {
+                    btn.setDisabled(false);
+                  }
+                }),
+              );
+            },
+          },
+          {
+            name: "Sync now",
+            render: (setting) => {
+              setting.addButton((btn) =>
+                btn
+                  .setButtonText("Sync")
+                  .setCta()
+                  .onClick(async () => {
+                    await this.plugin.runSync(true);
+                  }),
+              );
+            },
+          },
+        ],
+      },
+    ];
+  }
+
+  /** Fallback for Obsidian versions before declarative settings (1.13). */
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -28,8 +189,7 @@ export class ZyncSettingTab extends PluginSettingTab {
           .setPlaceholder("https://<account>.r2.cloudflarestorage.com")
           .setValue(this.plugin.settings.endpoint)
           .onChange(async (value) => {
-            this.plugin.settings.endpoint = value.trim();
-            await this.plugin.saveSettings();
+            await this.setControlValue("endpoint", value);
           }),
       );
 
@@ -41,8 +201,7 @@ export class ZyncSettingTab extends PluginSettingTab {
           .setPlaceholder("auto")
           .setValue(this.plugin.settings.region)
           .onChange(async (value) => {
-            this.plugin.settings.region = value.trim() || "auto";
-            await this.plugin.saveSettings();
+            await this.setControlValue("region", value);
           }),
       );
 
@@ -50,8 +209,7 @@ export class ZyncSettingTab extends PluginSettingTab {
       .setName("Bucket")
       .addText((text) =>
         text.setValue(this.plugin.settings.bucket).onChange(async (value) => {
-          this.plugin.settings.bucket = value.trim();
-          await this.plugin.saveSettings();
+          await this.setControlValue("bucket", value);
         }),
       );
 
@@ -59,8 +217,7 @@ export class ZyncSettingTab extends PluginSettingTab {
       .setName("Access key ID")
       .addText((text) =>
         text.setValue(this.plugin.settings.accessKeyId).onChange(async (value) => {
-          this.plugin.settings.accessKeyId = value.trim();
-          await this.plugin.saveSettings();
+          await this.setControlValue("accessKeyId", value);
         }),
       );
 
@@ -79,8 +236,7 @@ export class ZyncSettingTab extends PluginSettingTab {
       .setDesc("Recommended for MinIO and many S3-compatible endpoints.")
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.forcePathStyle).onChange(async (value) => {
-          this.plugin.settings.forcePathStyle = value;
-          await this.plugin.saveSettings();
+          await this.setControlValue("forcePathStyle", value);
         }),
       );
 
@@ -89,8 +245,7 @@ export class ZyncSettingTab extends PluginSettingTab {
       .setDesc("Optional folder prefix inside the bucket (for example my-vault).")
       .addText((text) =>
         text.setValue(this.plugin.settings.prefix).onChange(async (value) => {
-          this.plugin.settings.prefix = value.trim().replace(/^\/+|\/+$/g, "");
-          await this.plugin.saveSettings();
+          await this.setControlValue("prefix", value);
         }),
       );
 
@@ -104,10 +259,7 @@ export class ZyncSettingTab extends PluginSettingTab {
           .setPlaceholder("5")
           .setValue(String(this.plugin.settings.syncIntervalMinutes))
           .onChange(async (value) => {
-            const n = Number(value);
-            this.plugin.settings.syncIntervalMinutes = Number.isFinite(n) && n >= 0 ? n : 0;
-            await this.plugin.saveSettings();
-            this.plugin.resetInterval();
+            await this.setControlValue("syncIntervalMinutes", Number(value));
           }),
       );
 
@@ -115,24 +267,24 @@ export class ZyncSettingTab extends PluginSettingTab {
       .setName("Sync on load")
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.syncOnLoad).onChange(async (value) => {
-          this.plugin.settings.syncOnLoad = value;
-          await this.plugin.saveSettings();
+          await this.setControlValue("syncOnLoad", value);
         }),
       );
 
     new Setting(containerEl)
       .setName("Ignore patterns")
-      .setDesc("One glob per line. .obsidian and .trash are always skipped.")
+      .setDesc(
+        `One glob per line. ${this.app.vault.configDir} and .trash are always skipped.`,
+      )
       .addTextArea((area) => {
+        area.inputEl.addClass("zync-ignore-patterns");
         area
           .setPlaceholder("private/**\n*.tmp")
           .setValue(this.plugin.settings.ignorePatterns)
           .onChange(async (value) => {
-            this.plugin.settings.ignorePatterns = value;
-            await this.plugin.saveSettings();
+            await this.setControlValue("ignorePatterns", value);
           });
         area.inputEl.rows = 4;
-        area.inputEl.style.width = "100%";
       });
 
     new Setting(containerEl)

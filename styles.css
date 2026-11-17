@@ -2,6 +2,10 @@
   font-size: 0.85em;
 }
 
+.zync-settings .zync-ignore-patterns {
+  width: 100%;
+}
+
 .zync-status-ok {
   color: var(--text-success);
 }

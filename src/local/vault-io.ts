@@ -1,19 +1,17 @@
 import { App, TFile, normalizePath } from "obsidian";
 import type { LocalFileInfo } from "../types";
 
-const DEFAULT_IGNORES = [
-  ".obsidian/**",
-  ".trash/**",
-  "**/.DS_Store",
-  "**/Thumbs.db",
-];
+export function defaultIgnorePatterns(configDir: string): string[] {
+  const cfg = configDir.replace(/^\/+|\/+$/g, "") || ".obsidian";
+  return [`${cfg}/**`, ".trash/**", "**/.DS_Store", "**/Thumbs.db"];
+}
 
-export function parseIgnorePatterns(raw: string): string[] {
+export function parseIgnorePatterns(raw: string, configDir: string): string[] {
   const user = raw
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#"));
-  return [...DEFAULT_IGNORES, ...user];
+  return [...defaultIgnorePatterns(configDir), ...user];
 }
 
 /** Minimal glob: * and ** and ? — path uses forward slashes */
@@ -33,7 +31,7 @@ export function isIgnored(path: string, patterns: string[]): boolean {
 }
 
 export function listLocalFiles(app: App, ignorePatternsRaw: string): LocalFileInfo[] {
-  const patterns = parseIgnorePatterns(ignorePatternsRaw);
+  const patterns = parseIgnorePatterns(ignorePatternsRaw, app.vault.configDir);
   const files = app.vault.getFiles();
   const out: LocalFileInfo[] = [];
   for (const f of files) {

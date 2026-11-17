@@ -148,10 +148,12 @@ export class S3Client {
         throw s3Fail("list", res.status);
       }
 
-      const xml = res.text;
-      const contents = [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)];
+      const xml: string = res.text;
+      const contents: RegExpMatchArray[] = Array.from(
+        xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g),
+      );
       for (const match of contents) {
-        const block = match[1];
+        const block: string = match[1] ?? "";
         const key = textOf(block, "Key");
         if (!key) continue;
         // Skip directory placeholders and internal manifest
@@ -160,17 +162,21 @@ export class S3Client {
         if (!path) continue;
         if (path === "_zync/manifest.json" || path.startsWith("_zync/")) continue;
 
+        const sizeText = textOf(block, "Size") ?? "0";
+        const modifiedText = textOf(block, "LastModified") ?? "";
+        const etagText = textOf(block, "ETag") ?? "";
         out.push({
           key,
           path,
-          size: Number(textOf(block, "Size") || "0"),
-          lastModified: Date.parse(textOf(block, "LastModified") || "") || 0,
-          etag: (textOf(block, "ETag") || "").replace(/"/g, ""),
+          size: Number(sizeText),
+          lastModified: Date.parse(modifiedText) || 0,
+          etag: etagText.replace(/"/g, ""),
         });
       }
 
       const truncated = textOf(xml, "IsTruncated") === "true";
-      token = truncated ? textOf(xml, "NextContinuationToken") || undefined : undefined;
+      const nextToken = textOf(xml, "NextContinuationToken");
+      token = truncated ? nextToken || undefined : undefined;
     } while (token);
 
     return out;

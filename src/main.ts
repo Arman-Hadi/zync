@@ -34,7 +34,7 @@ export default class ZyncPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "zync-sync-now",
+      id: "sync-now",
       name: "Sync now",
       callback: async () => {
         await this.runSync(true);
@@ -42,7 +42,7 @@ export default class ZyncPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "zync-test-connection",
+      id: "test-connection",
       name: "Test S3 connection",
       callback: async () => {
         try {

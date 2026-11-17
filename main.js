@@ -247,6 +247,7 @@ var S3Client = class {
     }
   }
   async listAll() {
+    var _a, _b, _c, _d;
     const prefix = trimSlashes(this.settings.prefix);
     const prefixWithSlash = prefix ? prefix + "/" : "";
     const out = [];
@@ -264,25 +265,31 @@ var S3Client = class {
         throw s3Fail("list", res.status);
       }
       const xml = res.text;
-      const contents = [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)];
+      const contents = Array.from(
+        xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)
+      );
       for (const match of contents) {
-        const block = match[1];
+        const block = (_a = match[1]) != null ? _a : "";
         const key = textOf(block, "Key");
         if (!key) continue;
         if (key.endsWith("/")) continue;
         const path = keyToPath(this.settings.prefix, key);
         if (!path) continue;
         if (path === "_zync/manifest.json" || path.startsWith("_zync/")) continue;
+        const sizeText = (_b = textOf(block, "Size")) != null ? _b : "0";
+        const modifiedText = (_c = textOf(block, "LastModified")) != null ? _c : "";
+        const etagText = (_d = textOf(block, "ETag")) != null ? _d : "";
         out.push({
           key,
           path,
-          size: Number(textOf(block, "Size") || "0"),
-          lastModified: Date.parse(textOf(block, "LastModified") || "") || 0,
-          etag: (textOf(block, "ETag") || "").replace(/"/g, "")
+          size: Number(sizeText),
+          lastModified: Date.parse(modifiedText) || 0,
+          etag: etagText.replace(/"/g, "")
         });
       }
       const truncated = textOf(xml, "IsTruncated") === "true";
-      token = truncated ? textOf(xml, "NextContinuationToken") || void 0 : void 0;
+      const nextToken = textOf(xml, "NextContinuationToken");
+      token = truncated ? nextToken || void 0 : void 0;
     } while (token);
     return out;
   }
@@ -415,15 +422,13 @@ var MetaStore = class {
 
 // src/local/vault-io.ts
 var import_obsidian2 = require("obsidian");
-var DEFAULT_IGNORES = [
-  ".obsidian/**",
-  ".trash/**",
-  "**/.DS_Store",
-  "**/Thumbs.db"
-];
-function parseIgnorePatterns(raw) {
+function defaultIgnorePatterns(configDir) {
+  const cfg = configDir.replace(/^\/+|\/+$/g, "") || ".obsidian";
+  return [`${cfg}/**`, ".trash/**", "**/.DS_Store", "**/Thumbs.db"];
+}
+function parseIgnorePatterns(raw, configDir) {
   const user = raw.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-  return [...DEFAULT_IGNORES, ...user];
+  return [...defaultIgnorePatterns(configDir), ...user];
 }
 function matchGlob(path, pattern) {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "{{GLOBSTAR}}").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/{{GLOBSTAR}}/g, ".*");
@@ -434,7 +439,7 @@ function isIgnored(path, patterns) {
   return patterns.some((p) => matchGlob(path, p));
 }
 function listLocalFiles(app, ignorePatternsRaw) {
-  const patterns = parseIgnorePatterns(ignorePatternsRaw);
+  const patterns = parseIgnorePatterns(ignorePatternsRaw, app.vault.configDir);
   const files = app.vault.getFiles();
   const out = [];
   for (const f of files) {
@@ -777,6 +782,146 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
+  getControlValue(key) {
+    return this.plugin.settings[key];
+  }
+  async setControlValue(key, value) {
+    const settings = this.plugin.settings;
+    if (key === "syncIntervalMinutes") {
+      const n = Number(value);
+      settings[key] = Number.isFinite(n) && n >= 0 ? n : 0;
+    } else if (typeof value === "string" && (key === "endpoint" || key === "region" || key === "bucket" || key === "accessKeyId" || key === "prefix")) {
+      let next = value.trim();
+      if (key === "region" && !next) next = "auto";
+      if (key === "prefix") next = next.replace(/^\/+|\/+$/g, "");
+      settings[key] = next;
+    } else {
+      settings[key] = value;
+    }
+    await this.plugin.saveSettings();
+    if (key === "syncIntervalMinutes") {
+      this.plugin.resetInterval();
+    }
+  }
+  getSettingDefinitions() {
+    const configDir = this.app.vault.configDir;
+    return [
+      {
+        name: "About",
+        desc: "Two-way vault sync over S3-compatible storage (AWS S3, Cloudflare R2, MinIO, Backblaze B2, and similar). Works on desktop and mobile."
+      },
+      {
+        type: "group",
+        heading: "Connection",
+        items: [
+          {
+            name: "Endpoint",
+            desc: "Leave empty for AWS S3. For R2, MinIO, or B2 use the full HTTPS endpoint.",
+            control: {
+              type: "text",
+              key: "endpoint",
+              placeholder: "https://<account>.r2.cloudflarestorage.com"
+            }
+          },
+          {
+            name: "Region",
+            desc: "AWS region, or auto / us-east-1 for many S3-compatible providers.",
+            control: { type: "text", key: "region", placeholder: "auto" }
+          },
+          {
+            name: "Bucket",
+            control: { type: "text", key: "bucket" }
+          },
+          {
+            name: "Access key ID",
+            control: { type: "text", key: "accessKeyId" }
+          },
+          {
+            name: "Secret access key",
+            render: (setting) => {
+              setting.addText((text) => {
+                text.inputEl.type = "password";
+                text.setValue(this.plugin.settings.secretAccessKey).onChange(async (value) => {
+                  this.plugin.settings.secretAccessKey = value;
+                  await this.plugin.saveSettings();
+                });
+              });
+            }
+          },
+          {
+            name: "Force path-style URLs",
+            desc: "Recommended for MinIO and many S3-compatible endpoints.",
+            control: { type: "toggle", key: "forcePathStyle" }
+          },
+          {
+            name: "Key prefix",
+            desc: "Optional folder prefix inside the bucket (for example my-vault).",
+            control: { type: "text", key: "prefix" }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: "Sync",
+        items: [
+          {
+            name: "Sync interval (minutes)",
+            desc: "0 = manual only.",
+            control: {
+              type: "number",
+              key: "syncIntervalMinutes",
+              min: 0,
+              placeholder: "5"
+            }
+          },
+          {
+            name: "Sync on load",
+            control: { type: "toggle", key: "syncOnLoad" }
+          },
+          {
+            name: "Ignore patterns",
+            desc: `One glob per line. ${configDir} and .trash are always skipped.`,
+            control: {
+              type: "textarea",
+              key: "ignorePatterns",
+              placeholder: "private/**\n*.tmp",
+              rows: 4
+            }
+          },
+          {
+            name: "Test connection",
+            desc: "List objects in the bucket to verify credentials.",
+            render: (setting) => {
+              setting.addButton(
+                (btn) => btn.setButtonText("Test").onClick(async () => {
+                  btn.setDisabled(true);
+                  try {
+                    await this.plugin.testConnection();
+                    new import_obsidian3.Notice("Zync: connection OK");
+                  } catch (e) {
+                    new import_obsidian3.Notice(`Zync: connection failed \u2014 ${errMessage(e)}`);
+                  } finally {
+                    btn.setDisabled(false);
+                  }
+                })
+              );
+            }
+          },
+          {
+            name: "Sync now",
+            render: (setting) => {
+              setting.addButton(
+                (btn) => btn.setButtonText("Sync").setCta().onClick(async () => {
+                  await this.plugin.runSync(true);
+                })
+              );
+            }
+          }
+        ]
+      }
+    ];
+  }
+  /** Fallback for Obsidian versions before declarative settings (1.13). */
   display() {
     const { containerEl } = this;
     containerEl.empty();
@@ -787,26 +932,22 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
     new import_obsidian3.Setting(containerEl).setName("Connection").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Endpoint").setDesc("Leave empty for AWS S3. For R2, MinIO, or B2 use the full HTTPS endpoint.").addText(
       (text) => text.setPlaceholder("https://<account>.r2.cloudflarestorage.com").setValue(this.plugin.settings.endpoint).onChange(async (value) => {
-        this.plugin.settings.endpoint = value.trim();
-        await this.plugin.saveSettings();
+        await this.setControlValue("endpoint", value);
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Region").setDesc("AWS region, or auto / us-east-1 for many S3-compatible providers.").addText(
       (text) => text.setPlaceholder("auto").setValue(this.plugin.settings.region).onChange(async (value) => {
-        this.plugin.settings.region = value.trim() || "auto";
-        await this.plugin.saveSettings();
+        await this.setControlValue("region", value);
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Bucket").addText(
       (text) => text.setValue(this.plugin.settings.bucket).onChange(async (value) => {
-        this.plugin.settings.bucket = value.trim();
-        await this.plugin.saveSettings();
+        await this.setControlValue("bucket", value);
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Access key ID").addText(
       (text) => text.setValue(this.plugin.settings.accessKeyId).onChange(async (value) => {
-        this.plugin.settings.accessKeyId = value.trim();
-        await this.plugin.saveSettings();
+        await this.setControlValue("accessKeyId", value);
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Secret access key").addText((text) => {
@@ -818,38 +959,33 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     new import_obsidian3.Setting(containerEl).setName("Force path-style URLs").setDesc("Recommended for MinIO and many S3-compatible endpoints.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.forcePathStyle).onChange(async (value) => {
-        this.plugin.settings.forcePathStyle = value;
-        await this.plugin.saveSettings();
+        await this.setControlValue("forcePathStyle", value);
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Key prefix").setDesc("Optional folder prefix inside the bucket (for example my-vault).").addText(
       (text) => text.setValue(this.plugin.settings.prefix).onChange(async (value) => {
-        this.plugin.settings.prefix = value.trim().replace(/^\/+|\/+$/g, "");
-        await this.plugin.saveSettings();
+        await this.setControlValue("prefix", value);
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Sync").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Sync interval (minutes)").setDesc("0 = manual only.").addText(
       (text) => text.setPlaceholder("5").setValue(String(this.plugin.settings.syncIntervalMinutes)).onChange(async (value) => {
-        const n = Number(value);
-        this.plugin.settings.syncIntervalMinutes = Number.isFinite(n) && n >= 0 ? n : 0;
-        await this.plugin.saveSettings();
-        this.plugin.resetInterval();
+        await this.setControlValue("syncIntervalMinutes", Number(value));
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Sync on load").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.syncOnLoad).onChange(async (value) => {
-        this.plugin.settings.syncOnLoad = value;
-        await this.plugin.saveSettings();
+        await this.setControlValue("syncOnLoad", value);
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Ignore patterns").setDesc("One glob per line. .obsidian and .trash are always skipped.").addTextArea((area) => {
+    new import_obsidian3.Setting(containerEl).setName("Ignore patterns").setDesc(
+      `One glob per line. ${this.app.vault.configDir} and .trash are always skipped.`
+    ).addTextArea((area) => {
+      area.inputEl.addClass("zync-ignore-patterns");
       area.setPlaceholder("private/**\n*.tmp").setValue(this.plugin.settings.ignorePatterns).onChange(async (value) => {
-        this.plugin.settings.ignorePatterns = value;
-        await this.plugin.saveSettings();
+        await this.setControlValue("ignorePatterns", value);
       });
       area.inputEl.rows = 4;
-      area.inputEl.style.width = "100%";
     });
     new import_obsidian3.Setting(containerEl).setName("Test connection").setDesc("List objects in the bucket to verify credentials.").addButton(
       (btn) => btn.setButtonText("Test").onClick(async () => {
@@ -900,14 +1036,14 @@ var ZyncPlugin = class extends import_obsidian4.Plugin {
       await this.runSync(true);
     });
     this.addCommand({
-      id: "zync-sync-now",
+      id: "sync-now",
       name: "Sync now",
       callback: async () => {
         await this.runSync(true);
       }
     });
     this.addCommand({
-      id: "zync-test-connection",
+      id: "test-connection",
       name: "Test S3 connection",
       callback: async () => {
         try {
