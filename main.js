@@ -1239,92 +1239,6 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
       }
     ];
   }
-  /** Fallback for Obsidian versions before declarative settings (1.13). */
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.addClass("zync-settings");
-    containerEl.createEl("p", {
-      text: "Two-way vault sync over S3-compatible storage (AWS S3, Cloudflare R2, MinIO, Backblaze B2, and similar). Works on desktop and mobile."
-    });
-    new import_obsidian3.Setting(containerEl).setName("Connection").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Endpoint").setDesc("Leave empty for AWS S3. For R2, MinIO, or B2 use the full HTTPS endpoint.").addText(
-      (text) => text.setPlaceholder("https://<account>.r2.cloudflarestorage.com").setValue(this.plugin.settings.endpoint).onChange(async (value) => {
-        await this.setControlValue("endpoint", value);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Region").setDesc("AWS region, or auto / us-east-1 for many S3-compatible providers.").addText(
-      (text) => text.setPlaceholder("auto").setValue(this.plugin.settings.region).onChange(async (value) => {
-        await this.setControlValue("region", value);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Bucket").addText(
-      (text) => text.setValue(this.plugin.settings.bucket).onChange(async (value) => {
-        await this.setControlValue("bucket", value);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Access key ID").addText(
-      (text) => text.setValue(this.plugin.settings.accessKeyId).onChange(async (value) => {
-        await this.setControlValue("accessKeyId", value);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Secret access key").addText((text) => {
-      text.inputEl.type = "password";
-      text.setValue(this.plugin.settings.secretAccessKey).onChange(async (value) => {
-        this.plugin.settings.secretAccessKey = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian3.Setting(containerEl).setName("Force path-style URLs").setDesc("Recommended for MinIO and many S3-compatible endpoints.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.forcePathStyle).onChange(async (value) => {
-        await this.setControlValue("forcePathStyle", value);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Key prefix").setDesc("Optional folder prefix inside the bucket (for example my-vault).").addText(
-      (text) => text.setValue(this.plugin.settings.prefix).onChange(async (value) => {
-        await this.setControlValue("prefix", value);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Sync").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Sync interval (minutes)").setDesc("0 = manual only.").addText(
-      (text) => text.setPlaceholder("5").setValue(String(this.plugin.settings.syncIntervalMinutes)).onChange(async (value) => {
-        await this.setControlValue("syncIntervalMinutes", Number(value));
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Sync on load").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.syncOnLoad).onChange(async (value) => {
-        await this.setControlValue("syncOnLoad", value);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Ignore patterns").setDesc(
-      `One glob per line. ${this.app.vault.configDir} and .trash are always skipped.`
-    ).addTextArea((area) => {
-      area.inputEl.addClass("zync-ignore-patterns");
-      area.setPlaceholder("private/**\n*.tmp").setValue(this.plugin.settings.ignorePatterns).onChange(async (value) => {
-        await this.setControlValue("ignorePatterns", value);
-      });
-      area.inputEl.rows = 4;
-    });
-    new import_obsidian3.Setting(containerEl).setName("Test connection").setDesc("List objects in the bucket to verify credentials.").addButton(
-      (btn) => btn.setButtonText("Test").onClick(async () => {
-        btn.setDisabled(true);
-        try {
-          await this.plugin.testConnection();
-          new import_obsidian3.Notice("Zync: connection OK");
-        } catch (e) {
-          new import_obsidian3.Notice(`Zync: connection failed \u2014 ${errMessage(e)}`);
-        } finally {
-          btn.setDisabled(false);
-        }
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Sync now").addButton(
-      (btn) => btn.setButtonText("Sync").setCta().onClick(async () => {
-        await this.plugin.runSync(true);
-      })
-    );
-    this.renderProtectedFolderSection(containerEl);
-  }
   protectionStatusText() {
     const p = this.plugin.protection;
     if (!p.isConfigured()) {
@@ -1386,7 +1300,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
                 `Zync: protected folder enabled (${result.encrypted} encrypted, locked)`
               );
             }
-            this.refreshSettings();
+            this.update();
           } catch (e) {
             new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
           } finally {
@@ -1406,7 +1320,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
             new import_obsidian3.Notice(
               `Zync: connected & unlocked (${result.decrypted} decrypted)`
             );
-            this.refreshSettings();
+            this.update();
           } catch (e) {
             new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
           } finally {
@@ -1422,29 +1336,27 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
           btn.setDisabled(true);
           try {
             await this.plugin.runLockFlow();
-            this.refreshSettings();
+            this.update();
           } finally {
             btn.setDisabled(false);
           }
         })
-      ).addButton((btn) => {
-        btn.setButtonText("Disable");
-        if ((0, import_obsidian3.requireApiVersion)("1.13.0")) btn.setDestructive();
-        return btn.onClick(async () => {
+      ).addButton(
+        (btn) => btn.setButtonText("Disable").setDestructive().onClick(async () => {
           btn.setDisabled(true);
           try {
             await this.plugin.protection.disable();
             this.draftFolder = "";
             this.draftPassword = "";
             new import_obsidian3.Notice("Zync: protection disabled; notes decrypted");
-            this.refreshSettings();
+            this.update();
           } catch (e) {
             new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
           } finally {
             btn.setDisabled(false);
           }
-        });
-      });
+        })
+      );
       return;
     }
     new import_obsidian3.Setting(containerEl).setName("Password").setDesc(`Unlock "${this.plugin.protection.getFolder()}" on this device.`).addText((text) => {
@@ -1462,7 +1374,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
           this.draftUnlockPassword = "";
           this.plugin.noteUnlockedRecently();
           new import_obsidian3.Notice("Zync: protected folder unlocked");
-          this.refreshSettings();
+          this.update();
         } catch (e) {
           new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
         } finally {
@@ -1474,20 +1386,12 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
         btn.setDisabled(true);
         try {
           await this.plugin.runLockFlow();
-          this.refreshSettings();
+          this.update();
         } finally {
           btn.setDisabled(false);
         }
       })
     );
-  }
-  /** Refresh after protect actions: update() on 1.13+, else rebuild via display(). */
-  refreshSettings() {
-    if (typeof this.update === "function") {
-      this.update();
-    } else {
-      this.display();
-    }
   }
 };
 function errMessage(e) {
@@ -1780,16 +1684,18 @@ var ProtectedFolderManager = class {
    */
   flushEnvelopesSync() {
     if (this.envelopes.size === 0) return 0;
-    if (!import_obsidian4.Platform.isDesktopApp) return 0;
+    if (!import_obsidian4.Platform.isDesktop) return 0;
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof import_obsidian4.FileSystemAdapter)) return 0;
-    const fs = require("fs");
-    const pathMod = require("path");
+    const nodeRequire = window.require;
+    const fs = nodeRequire == null ? void 0 : nodeRequire("fs");
+    if (!fs) return 0;
     const base = adapter.getBasePath();
+    const sep = base.includes("\\") ? "\\" : "/";
     let written = 0;
     for (const [rel, body] of this.envelopes) {
       try {
-        const full = pathMod.join(base, ...rel.split("/"));
+        const full = [base.replace(/[/\\]+$/, ""), ...rel.split("/")].join(sep);
         fs.writeFileSync(full, body, "utf8");
         written++;
       } catch (e) {

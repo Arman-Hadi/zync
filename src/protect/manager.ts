@@ -381,18 +381,27 @@ export class ProtectedFolderManager {
   flushEnvelopesSync(): number {
     if (this.envelopes.size === 0) return 0;
     // Mobile has no sync Node path; visibility async lock covers that.
-    if (!Platform.isDesktopApp) return 0;
+    if (!Platform.isDesktop) return 0;
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) return 0;
 
-    // Desktop-only: sync write so quit/pagehide can persist ciphertext without async vault I/O.
-    const fs = require("fs") as { writeFileSync: (path: string, data: string, encoding: string) => void };
-    const pathMod = require("path") as { join: (...parts: string[]) => string };
+    // Electron exposes Node require on window; optional call is a no-op on mobile.
+    const nodeRequire = (
+      window as Window & {
+        require?: (id: "fs") => {
+          writeFileSync: (path: string, data: string, encoding: string) => void;
+        };
+      }
+    ).require;
+    const fs = nodeRequire?.("fs");
+    if (!fs) return 0;
+
     const base = adapter.getBasePath();
+    const sep = base.includes("\\") ? "\\" : "/";
     let written = 0;
     for (const [rel, body] of this.envelopes) {
       try {
-        const full = pathMod.join(base, ...rel.split("/"));
+        const full = [base.replace(/[/\\]+$/, ""), ...rel.split("/")].join(sep);
         fs.writeFileSync(full, body, "utf8");
         written++;
       } catch {
