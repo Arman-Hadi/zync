@@ -1,5 +1,5 @@
 import type { App } from "obsidian";
-import { TFile, normalizePath } from "obsidian";
+import { FileSystemAdapter, MarkdownView, TFile, normalizePath } from "obsidian";
 import type { ZyncSettings } from "../types";
 import {
   CryptoError,
@@ -39,6 +39,11 @@ export interface ProtectResult {
 export class ProtectedFolderManager {
   private key: CryptoKey | null = null;
   private salt: Uint8Array | null = null;
+  /** Latest ciphertext per path — kept warm so quit can sync-write without waiting on AES. */
+  private envelopes = new Map<string, string>();
+  /** Disk has ciphertext but the key may still be in memory (backgrounded). */
+  private diskSecured = false;
+  private cacheTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private app: App,
@@ -81,6 +86,16 @@ export class ProtectedFolderManager {
   clearSession(): void {
     this.key = null;
     this.salt = null;
+    this.envelopes.clear();
+    this.diskSecured = false;
+    if (this.cacheTimer != null) {
+      clearTimeout(this.cacheTimer);
+      this.cacheTimer = null;
+    }
+  }
+
+  isDiskSecured(): boolean {
+    return this.diskSecured;
   }
 
   listProtectedMarkdownFiles(folder = this.getFolder()): TFile[] {
@@ -88,6 +103,35 @@ export class ProtectedFolderManager {
     return this.app.vault
       .getMarkdownFiles()
       .filter((f) => isProtectedMarkdownPath(f.path, folder));
+  }
+
+  /** True if any protected note is still plaintext while the session is locked. */
+  async hasPlaintextProtectedFiles(folder = this.getFolder()): Promise<boolean> {
+    return (await this.listPlaintextProtectedPaths(folder)).length > 0;
+  }
+
+  async listPlaintextProtectedPaths(folder = this.getFolder()): Promise<string[]> {
+    const out: string[] = [];
+    for (const file of this.listProtectedMarkdownFiles(folder)) {
+      const raw = await this.app.vault.read(file);
+      if (!isEncryptedEnvelope(raw)) out.push(file.path);
+    }
+    return out;
+  }
+
+  /**
+   * Fail fast before sync if locked session still has plaintext on disk
+   * (often caused by an editor save overwriting ciphertext after auto-lock).
+   */
+  async assertReadyForSync(): Promise<void> {
+    if (!this.isConfigured() || this.isUnlocked()) return;
+    const plain = await this.listPlaintextProtectedPaths();
+    if (!plain.length) return;
+    const sample = plain.slice(0, 3).join(", ");
+    const more = plain.length > 3 ? ` (+${plain.length - 3} more)` : "";
+    throw new CryptoError(
+      `Protected folder has ${plain.length} plaintext note(s) while locked (e.g. ${sample}${more}). Run “Lock protected folder” and enter your password, then sync again.`,
+    );
   }
 
   /**
@@ -195,6 +239,9 @@ export class ProtectedFolderManager {
       this.clearSession();
       throw new CryptoError(result.errors[0]);
     }
+    // Warm ciphertext cache immediately so quit can flush without re-deriving AES.
+    await this.rebuildEnvelopeCache();
+    this.diskSecured = false;
     return result;
   }
 
@@ -242,18 +289,183 @@ export class ProtectedFolderManager {
 
   /**
    * Encrypt all protected notes and clear the in-memory key.
-   * Refuses to leave plaintext on disk if encryption fails mid-way for a file
-   * (each file is replaced atomically only after a successful encrypt+verify).
+   * Never drops the key if plaintext notes remain (failed/partial encrypt).
    */
   async lock(): Promise<ProtectResult> {
     if (!this.isConfigured()) throw new CryptoError("No protected folder configured");
     if (!this.isUnlocked()) {
-      // Already locked — still try to encrypt any stray plaintext notes if we can't (no key).
+      if (await this.hasPlaintextProtectedFiles()) {
+        throw new CryptoError(
+          "Session has no key but notes are still plaintext. Enter your password to lock/encrypt them.",
+        );
+      }
       return { encrypted: 0, decrypted: 0, skipped: 0, errors: ["Folder is already locked"] };
     }
+    return this.secureDisk({ clearSession: true });
+  }
+
+  /**
+   * Restore the key from the password and encrypt any plaintext protected notes.
+   * Use when the session was lost (reload/auto-lock race) but files are still plaintext.
+   */
+  async lockWithPassword(password: string): Promise<ProtectResult> {
+    if (!this.isConfigured()) throw new CryptoError("No protected folder configured");
+    if (!password) throw new CryptoError("Password required");
+
+    if (!this.isUnlocked()) {
+      const settings = this.getSettings();
+      const salt = fromHex(settings.protectedSalt);
+      const key = await deriveKey(password, salt);
+      const ok = await verifyPassword(
+        key,
+        settings.protectedVerifierNonce,
+        settings.protectedVerifierCipher,
+      );
+      if (!ok) throw new CryptoError("Incorrect password");
+      this.key = key;
+      this.salt = salt;
+    }
+
+    return this.secureDisk({ clearSession: true });
+  }
+
+  /**
+   * Write ciphertext for every protected note.
+   * `clearSession: false` keeps the key so returning to Obsidian can decrypt again.
+   */
+  async secureDisk(options: { clearSession: boolean }): Promise<ProtectResult> {
+    if (!this.key || !this.salt) throw new CryptoError("Not unlocked");
+    await this.saveProtectedEditors();
+    await this.rebuildEnvelopeCache();
     const result = await this.encryptAllProtectedFiles();
-    this.clearSession();
+    // Backup sync write (desktop) so a dying process still leaves ciphertext on disk.
+    this.flushEnvelopesSync();
+    await this.reloadProtectedEditors();
+
+    if (result.errors.length) return result;
+    if (await this.hasPlaintextProtectedFiles()) {
+      result.errors.push("Plaintext protected notes remain; session kept unlocked");
+      return result;
+    }
+
+    this.diskSecured = true;
+    if (options.clearSession) this.clearSession();
     return result;
+  }
+
+  /** Decrypt again after background secureDisk kept the key. */
+  async resumeSession(): Promise<ProtectResult> {
+    if (!this.isUnlocked()) {
+      return { encrypted: 0, decrypted: 0, skipped: 0, errors: ["Not unlocked"] };
+    }
+    const result = await this.decryptAllProtectedFiles();
+    await this.rebuildEnvelopeCache();
+    this.diskSecured = false;
+    return result;
+  }
+
+  /** Keep envelope cache fresh while editing (called on vault modify). */
+  scheduleEnvelopeCache(file: TFile): void {
+    if (!this.isUnlocked() || !this.isProtectedPath(file.path)) return;
+    if (this.cacheTimer != null) clearTimeout(this.cacheTimer);
+    this.cacheTimer = setTimeout(() => {
+      this.cacheTimer = null;
+      void this.cacheEnvelopeForFile(file);
+    }, 120);
+  }
+
+  /**
+   * Synchronous desktop flush of cached envelopes. Safe to call from pagehide/unload.
+   * Returns how many files were written.
+   */
+  flushEnvelopesSync(): number {
+    if (this.envelopes.size === 0) return 0;
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) return 0;
+
+    // Desktop Node fs — mobile has no sync path; visibility async lock covers that.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("fs") as typeof import("fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pathMod = require("path") as typeof import("path");
+    const base = adapter.getBasePath();
+    let written = 0;
+    for (const [rel, body] of this.envelopes) {
+      try {
+        const full = pathMod.join(base, ...rel.split("/"));
+        fs.writeFileSync(full, body, "utf8");
+        written++;
+      } catch (e) {
+        console.error("Zync: sync flush failed", rel, e);
+      }
+    }
+    if (written > 0) this.diskSecured = true;
+    return written;
+  }
+
+  /** Quit path: sync-write warm cache, drop key. */
+  emergencyQuitFlush(): number {
+    const n = this.flushEnvelopesSync();
+    this.clearSession();
+    return n;
+  }
+
+  private async rebuildEnvelopeCache(): Promise<void> {
+    if (!this.key || !this.salt) return;
+    for (const file of this.listProtectedMarkdownFiles()) {
+      await this.cacheEnvelopeForFile(file);
+    }
+  }
+
+  private async cacheEnvelopeForFile(file: TFile): Promise<void> {
+    if (!this.key || !this.salt) return;
+    try {
+      const raw = await this.app.vault.read(file);
+      const envelope = isEncryptedEnvelope(raw)
+        ? raw
+        : await encryptMarkdown(raw, this.key, this.salt, file.path);
+      this.envelopes.set(file.path, envelope);
+    } catch (e) {
+      console.warn("Zync: envelope cache failed", file.path, e);
+    }
+  }
+
+  private async saveProtectedEditors(): Promise<void> {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView) || !view.file) continue;
+      if (!this.isProtectedPath(view.file.path)) continue;
+      try {
+        await view.save();
+      } catch (e) {
+        console.warn("Zync: failed to save editor before lock", view.file.path, e);
+      }
+    }
+  }
+
+  /** Re-read from disk so the editor cannot save stale plaintext over ciphertext. */
+  private async reloadProtectedEditors(): Promise<void> {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView) || !view.file) continue;
+      if (!this.isProtectedPath(view.file.path)) continue;
+      try {
+        const leafAny = leaf as { rebuildView?: () => Promise<void> };
+        if (typeof leafAny.rebuildView === "function") {
+          await leafAny.rebuildView();
+        } else {
+          const file = view.file;
+          const vs = leaf.getViewState();
+          await leaf.setViewState({ type: "empty", state: {} });
+          await leaf.setViewState({
+            ...vs,
+            state: { ...(vs.state as Record<string, unknown>), file: file.path },
+          });
+        }
+      } catch (e) {
+        console.warn("Zync: failed to reload editor after lock", view.file.path, e);
+      }
+    }
   }
 
   /**
@@ -269,7 +481,7 @@ export class ProtectedFolderManager {
 
     if (!this.isUnlocked() || !this.key || !this.salt) {
       throw new CryptoError(
-        `Refusing to upload plaintext protected file (folder locked): ${path}`,
+        `Protected note is plaintext while locked (${path}). Unlock, then Lock — or run Lock and enter your password — before syncing.`,
       );
     }
 
@@ -353,6 +565,7 @@ export class ProtectedFolderManager {
       try {
         const raw = await this.app.vault.read(file);
         if (isEncryptedEnvelope(raw)) {
+          this.envelopes.set(file.path, raw);
           result.skipped++;
           continue;
         }
@@ -363,6 +576,7 @@ export class ProtectedFolderManager {
           throw new CryptoError(`Encrypt verify failed for ${file.path}`);
         }
         await this.atomicWriteText(file, envelope);
+        this.envelopes.set(file.path, envelope);
         result.encrypted++;
       } catch (e) {
         result.errors.push(`${file.path}: ${e instanceof Error ? e.message : String(e)}`);
@@ -390,6 +604,7 @@ export class ProtectedFolderManager {
         result.errors.push(`${file.path}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    await this.reloadProtectedEditors();
     return result;
   }
 

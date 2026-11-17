@@ -78,6 +78,7 @@ export class SyncEngine {
     try {
       this.assertConfigured();
       await this.protection.recoverPartials();
+      await this.protection.assertReadyForSync();
 
       let state = this.meta.get();
       const localFiles = listLocalFiles(this.app, this.settings.ignorePatterns);

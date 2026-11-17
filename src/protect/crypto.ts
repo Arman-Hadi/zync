@@ -161,12 +161,26 @@ export function isEncryptedEnvelope(text: string): boolean {
 
 export function isEncryptedBytes(data: ArrayBuffer | Uint8Array): boolean {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-  try {
-    const text = textDecoder.decode(bytes);
-    return isEncryptedEnvelope(text);
-  } catch {
-    return false;
+  // Byte-level magic check (avoids TextDecoder edge cases on odd buffers).
+  let offset = 0;
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    offset = 3;
   }
+  while (
+    offset < bytes.length &&
+    (bytes[offset] === 0x20 ||
+      bytes[offset] === 0x09 ||
+      bytes[offset] === 0x0a ||
+      bytes[offset] === 0x0d)
+  ) {
+    offset++;
+  }
+  const magic = textEncoder.encode(MAGIC_LINE);
+  if (bytes.length < offset + magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (bytes[offset + i] !== magic[i]) return false;
+  }
+  return true;
 }
 
 export function parseEnvelope(text: string): EncryptedPayload {

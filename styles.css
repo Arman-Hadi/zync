@@ -6,8 +6,31 @@
   width: 100%;
 }
 
-.zync-settings .setting-item-control input[type="password"] {
-  width: 8rem;
+/* Protected folder: full-width inputs, wrapping action buttons (mobile-first). */
+.zync-settings .zync-protect-input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.zync-settings .zync-protect-actions .setting-item-control {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: stretch;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.zync-settings .zync-protect-actions button {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+@media (min-width: 420px) {
+  .zync-settings .zync-protect-actions button {
+    flex: 1 1 calc(50% - 0.5rem);
+  }
 }
 
 .zync-status-ok {

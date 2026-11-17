@@ -36,8 +36,11 @@ export class UnlockModal extends Modal {
       });
     }
 
+    contentEl.addClass("zync-settings");
+
     if (this.askFolder) {
       new Setting(contentEl).setName("Folder").addText((text) => {
+        text.inputEl.addClass("zync-protect-input");
         text
           .setPlaceholder("Private")
           .setValue(this.folder)
@@ -51,6 +54,7 @@ export class UnlockModal extends Modal {
       .setName("Password")
       .addText((text) => {
         text.inputEl.type = "password";
+        text.inputEl.addClass("zync-protect-input");
         text.inputEl.focus();
         text.onChange((value) => {
           this.password = value;
@@ -64,6 +68,7 @@ export class UnlockModal extends Modal {
       });
 
     new Setting(contentEl)
+      .setClass("zync-protect-actions")
       .addButton((btn) =>
         btn.setButtonText("Cancel").onClick(() => {
           this.close();

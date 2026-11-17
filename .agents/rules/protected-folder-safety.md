@@ -24,3 +24,8 @@ Settings are local. Second device: **Connect & unlock** (or Enable when encrypte
 
 - Atomic writes via `.zync-partial`; `recoverPartials` must never promote a partial over a valid encrypted target
 - Only `.md` under the chosen folder is protected
+- While unlocked, keep a warm in-memory ciphertext cache (rebuild on unlock; refresh on modify).
+- Background hide: `secureDisk({ clearSession: false })` then `resumeSession` on focus.
+- Quit (`pagehide` / `beforeunload` / `onunload`): `emergencyQuitFlush` sync-writes cached envelopes via desktop `fs` and drops the key — do not rely on async vault writes surviving process death.
+- Never `clearSession` on partial encrypt failure while the user is still in-session.
+- If plaintext remains after a crashed quit, prompt once for `lockWithPassword` and skip sync-on-load until repaired.

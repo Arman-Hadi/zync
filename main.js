@@ -646,12 +646,19 @@ function isEncryptedEnvelope(text) {
 }
 function isEncryptedBytes(data) {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-  try {
-    const text = textDecoder.decode(bytes);
-    return isEncryptedEnvelope(text);
-  } catch (e) {
-    return false;
+  let offset = 0;
+  if (bytes.length >= 3 && bytes[0] === 239 && bytes[1] === 187 && bytes[2] === 191) {
+    offset = 3;
   }
+  while (offset < bytes.length && (bytes[offset] === 32 || bytes[offset] === 9 || bytes[offset] === 10 || bytes[offset] === 13)) {
+    offset++;
+  }
+  const magic = textEncoder.encode(MAGIC_LINE);
+  if (bytes.length < offset + magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (bytes[offset + i] !== magic[i]) return false;
+  }
+  return true;
 }
 function parseEnvelope(text) {
   const trimmed = text.replace(/^\uFEFF/, "").trim();
@@ -945,6 +952,7 @@ var SyncEngine = class {
     try {
       this.assertConfigured();
       await this.protection.recoverPartials();
+      await this.protection.assertReadyForSync();
       let state = this.meta.get();
       const localFiles = listLocalFiles(this.app, this.settings.ignorePatterns);
       const remoteFiles = await this.s3.listAll();
@@ -1217,13 +1225,17 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
         heading: "Protected folder",
         items: [
           {
-            name: "Status",
-            desc: this.protectionStatusText()
-          },
-          {
-            name: "Folder",
-            desc: "One vault folder whose Markdown notes are encrypted when locked. Synced to S3 only in encrypted form.",
-            render: (setting) => this.renderProtectedFolderControls(setting)
+            name: "Protected folder",
+            desc: this.protectionStatusText(),
+            render: (setting) => {
+              const parent = setting.settingEl.parentElement;
+              if (parent) {
+                setting.settingEl.remove();
+                this.renderProtectedFolderSection(parent, false);
+              } else {
+                this.renderProtectedFolderControlsInto(setting.settingEl);
+              }
+            }
           }
         ]
       }
@@ -1322,37 +1334,41 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
     }
     const folder = p.getFolder();
     if (p.isUnlocked()) {
-      return `"${folder}" is unlocked. Notes are plaintext on disk; sync still uploads ciphertext only.`;
+      return `"${folder}" is unlocked. Leaving Obsidian encrypts notes on disk automatically; you only need the password to unlock again.`;
     }
     return `"${folder}" is locked. Markdown notes inside are encrypted on disk and in S3.`;
   }
-  renderProtectedFolderSection(containerEl) {
-    new import_obsidian3.Setting(containerEl).setName("Protected folder").setHeading();
+  renderProtectedFolderSection(containerEl, withHeading = true) {
+    if (withHeading) {
+      new import_obsidian3.Setting(containerEl).setName("Protected folder").setHeading();
+    }
     new import_obsidian3.Setting(containerEl).setName("Status").setDesc(this.protectionStatusText());
-    const folderSetting = new import_obsidian3.Setting(containerEl).setName("Folder").setDesc(
-      "One vault folder whose Markdown notes are encrypted when locked. Synced to S3 only in encrypted form."
-    );
-    this.renderProtectedFolderControls(folderSetting);
+    this.renderProtectedFolderControlsInto(containerEl);
   }
-  renderProtectedFolderControls(setting) {
+  /** Stack folder / password / actions as separate rows so mobile stays usable. */
+  renderProtectedFolderControlsInto(containerEl) {
     const configured = this.plugin.protection.isConfigured();
     const unlocked = this.plugin.protection.isUnlocked();
     if (!configured) {
       if (!this.draftFolder) {
         this.draftFolder = this.plugin.settings.protectedFolder || "";
       }
-      setting.addText((text) => {
+      new import_obsidian3.Setting(containerEl).setName("Folder").setDesc(
+        "Vault folder to protect (same name on every device). Only Markdown notes inside are encrypted."
+      ).addText((text) => {
+        text.inputEl.addClass("zync-protect-input");
         text.setPlaceholder("Private").setValue(this.draftFolder).onChange((value) => {
           this.draftFolder = value;
         });
       });
-      setting.addText((text) => {
+      new import_obsidian3.Setting(containerEl).setName("Password").setDesc("Never stored. Needed to unlock on this device.").addText((text) => {
         text.inputEl.type = "password";
+        text.inputEl.addClass("zync-protect-input");
         text.setPlaceholder("Password").setValue(this.draftPassword).onChange((value) => {
           this.draftPassword = value;
         });
       });
-      setting.addButton(
+      new import_obsidian3.Setting(containerEl).setName("Actions").setClass("zync-protect-actions").addButton(
         (btn) => btn.setButtonText("Enable & encrypt").setCta().onClick(async () => {
           btn.setDisabled(true);
           try {
@@ -1379,8 +1395,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
             btn.setDisabled(false);
           }
         })
-      );
-      setting.addButton(
+      ).addButton(
         (btn) => btn.setButtonText("Connect & unlock").onClick(async () => {
           btn.setDisabled(true);
           try {
@@ -1389,6 +1404,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
               this.draftPassword
             );
             this.draftPassword = "";
+            this.plugin.noteUnlockedRecently();
             new import_obsidian3.Notice(
               `Zync: connected & unlocked (${result.decrypted} decrypted)`
             );
@@ -1403,25 +1419,17 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
       return;
     }
     if (unlocked) {
-      setting.addButton(
+      new import_obsidian3.Setting(containerEl).setName("Actions").setDesc(`Folder: ${this.plugin.protection.getFolder()}`).setClass("zync-protect-actions").addButton(
         (btn) => btn.setButtonText("Lock").setCta().onClick(async () => {
           btn.setDisabled(true);
           try {
-            const result = await this.plugin.protection.lock();
-            if (result.errors.length) {
-              new import_obsidian3.Notice(`Zync: lock errors \u2014 ${result.errors[0]}`);
-            } else {
-              new import_obsidian3.Notice(`Zync: locked (${result.encrypted} encrypted)`);
-            }
+            await this.plugin.runLockFlow();
             this.display();
-          } catch (e) {
-            new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
           } finally {
             btn.setDisabled(false);
           }
         })
-      );
-      setting.addButton(
+      ).addButton(
         (btn) => btn.setButtonText("Disable").setWarning().onClick(async () => {
           btn.setDisabled(true);
           try {
@@ -1439,18 +1447,20 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
       );
       return;
     }
-    setting.addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName("Password").setDesc(`Unlock "${this.plugin.protection.getFolder()}" on this device.`).addText((text) => {
       text.inputEl.type = "password";
+      text.inputEl.addClass("zync-protect-input");
       text.setPlaceholder("Password").setValue(this.draftUnlockPassword).onChange((value) => {
         this.draftUnlockPassword = value;
       });
     });
-    setting.addButton(
+    new import_obsidian3.Setting(containerEl).setName("Actions").setClass("zync-protect-actions").addButton(
       (btn) => btn.setButtonText("Unlock").setCta().onClick(async () => {
         btn.setDisabled(true);
         try {
           await this.plugin.protection.unlock(this.draftUnlockPassword);
           this.draftUnlockPassword = "";
+          this.plugin.noteUnlockedRecently();
           new import_obsidian3.Notice("Zync: protected folder unlocked");
           this.display();
         } catch (e) {
@@ -1459,10 +1469,15 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
           btn.setDisabled(false);
         }
       })
-    );
-    setting.addButton(
-      (btn) => btn.setButtonText("Lock").onClick(async () => {
-        new import_obsidian3.Notice("Zync: folder is already locked");
+    ).addButton(
+      (btn) => btn.setButtonText("Lock / encrypt").onClick(async () => {
+        btn.setDisabled(true);
+        try {
+          await this.plugin.runLockFlow();
+          this.display();
+        } finally {
+          btn.setDisabled(false);
+        }
       })
     );
   }
@@ -1482,6 +1497,11 @@ var ProtectedFolderManager = class {
     this.persistSettings = persistSettings;
     this.key = null;
     this.salt = null;
+    /** Latest ciphertext per path — kept warm so quit can sync-write without waiting on AES. */
+    this.envelopes = /* @__PURE__ */ new Map();
+    /** Disk has ciphertext but the key may still be in memory (backgrounded). */
+    this.diskSecured = false;
+    this.cacheTimer = null;
   }
   isConfigured() {
     const s = this.getSettings();
@@ -1507,10 +1527,45 @@ var ProtectedFolderManager = class {
   clearSession() {
     this.key = null;
     this.salt = null;
+    this.envelopes.clear();
+    this.diskSecured = false;
+    if (this.cacheTimer != null) {
+      clearTimeout(this.cacheTimer);
+      this.cacheTimer = null;
+    }
+  }
+  isDiskSecured() {
+    return this.diskSecured;
   }
   listProtectedMarkdownFiles(folder = this.getFolder()) {
     if (!folder) return [];
     return this.app.vault.getMarkdownFiles().filter((f) => isProtectedMarkdownPath(f.path, folder));
+  }
+  /** True if any protected note is still plaintext while the session is locked. */
+  async hasPlaintextProtectedFiles(folder = this.getFolder()) {
+    return (await this.listPlaintextProtectedPaths(folder)).length > 0;
+  }
+  async listPlaintextProtectedPaths(folder = this.getFolder()) {
+    const out = [];
+    for (const file of this.listProtectedMarkdownFiles(folder)) {
+      const raw = await this.app.vault.read(file);
+      if (!isEncryptedEnvelope(raw)) out.push(file.path);
+    }
+    return out;
+  }
+  /**
+   * Fail fast before sync if locked session still has plaintext on disk
+   * (often caused by an editor save overwriting ciphertext after auto-lock).
+   */
+  async assertReadyForSync() {
+    if (!this.isConfigured() || this.isUnlocked()) return;
+    const plain = await this.listPlaintextProtectedPaths();
+    if (!plain.length) return;
+    const sample = plain.slice(0, 3).join(", ");
+    const more = plain.length > 3 ? ` (+${plain.length - 3} more)` : "";
+    throw new CryptoError(
+      `Protected folder has ${plain.length} plaintext note(s) while locked (e.g. ${sample}${more}). Run \u201CLock protected folder\u201D and enter your password, then sync again.`
+    );
   }
   /**
    * Enable protection on a folder.
@@ -1602,6 +1657,8 @@ var ProtectedFolderManager = class {
       this.clearSession();
       throw new CryptoError(result.errors[0]);
     }
+    await this.rebuildEnvelopeCache();
+    this.diskSecured = false;
     return result;
   }
   async findEncryptedSample(folder) {
@@ -1634,17 +1691,162 @@ var ProtectedFolderManager = class {
   }
   /**
    * Encrypt all protected notes and clear the in-memory key.
-   * Refuses to leave plaintext on disk if encryption fails mid-way for a file
-   * (each file is replaced atomically only after a successful encrypt+verify).
+   * Never drops the key if plaintext notes remain (failed/partial encrypt).
    */
   async lock() {
     if (!this.isConfigured()) throw new CryptoError("No protected folder configured");
     if (!this.isUnlocked()) {
+      if (await this.hasPlaintextProtectedFiles()) {
+        throw new CryptoError(
+          "Session has no key but notes are still plaintext. Enter your password to lock/encrypt them."
+        );
+      }
       return { encrypted: 0, decrypted: 0, skipped: 0, errors: ["Folder is already locked"] };
     }
+    return this.secureDisk({ clearSession: true });
+  }
+  /**
+   * Restore the key from the password and encrypt any plaintext protected notes.
+   * Use when the session was lost (reload/auto-lock race) but files are still plaintext.
+   */
+  async lockWithPassword(password) {
+    if (!this.isConfigured()) throw new CryptoError("No protected folder configured");
+    if (!password) throw new CryptoError("Password required");
+    if (!this.isUnlocked()) {
+      const settings = this.getSettings();
+      const salt = fromHex(settings.protectedSalt);
+      const key = await deriveKey(password, salt);
+      const ok = await verifyPassword(
+        key,
+        settings.protectedVerifierNonce,
+        settings.protectedVerifierCipher
+      );
+      if (!ok) throw new CryptoError("Incorrect password");
+      this.key = key;
+      this.salt = salt;
+    }
+    return this.secureDisk({ clearSession: true });
+  }
+  /**
+   * Write ciphertext for every protected note.
+   * `clearSession: false` keeps the key so returning to Obsidian can decrypt again.
+   */
+  async secureDisk(options) {
+    if (!this.key || !this.salt) throw new CryptoError("Not unlocked");
+    await this.saveProtectedEditors();
+    await this.rebuildEnvelopeCache();
     const result = await this.encryptAllProtectedFiles();
-    this.clearSession();
+    this.flushEnvelopesSync();
+    await this.reloadProtectedEditors();
+    if (result.errors.length) return result;
+    if (await this.hasPlaintextProtectedFiles()) {
+      result.errors.push("Plaintext protected notes remain; session kept unlocked");
+      return result;
+    }
+    this.diskSecured = true;
+    if (options.clearSession) this.clearSession();
     return result;
+  }
+  /** Decrypt again after background secureDisk kept the key. */
+  async resumeSession() {
+    if (!this.isUnlocked()) {
+      return { encrypted: 0, decrypted: 0, skipped: 0, errors: ["Not unlocked"] };
+    }
+    const result = await this.decryptAllProtectedFiles();
+    await this.rebuildEnvelopeCache();
+    this.diskSecured = false;
+    return result;
+  }
+  /** Keep envelope cache fresh while editing (called on vault modify). */
+  scheduleEnvelopeCache(file) {
+    if (!this.isUnlocked() || !this.isProtectedPath(file.path)) return;
+    if (this.cacheTimer != null) clearTimeout(this.cacheTimer);
+    this.cacheTimer = setTimeout(() => {
+      this.cacheTimer = null;
+      void this.cacheEnvelopeForFile(file);
+    }, 120);
+  }
+  /**
+   * Synchronous desktop flush of cached envelopes. Safe to call from pagehide/unload.
+   * Returns how many files were written.
+   */
+  flushEnvelopesSync() {
+    if (this.envelopes.size === 0) return 0;
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof import_obsidian4.FileSystemAdapter)) return 0;
+    const fs = require("fs");
+    const pathMod = require("path");
+    const base = adapter.getBasePath();
+    let written = 0;
+    for (const [rel, body] of this.envelopes) {
+      try {
+        const full = pathMod.join(base, ...rel.split("/"));
+        fs.writeFileSync(full, body, "utf8");
+        written++;
+      } catch (e) {
+        console.error("Zync: sync flush failed", rel, e);
+      }
+    }
+    if (written > 0) this.diskSecured = true;
+    return written;
+  }
+  /** Quit path: sync-write warm cache, drop key. */
+  emergencyQuitFlush() {
+    const n = this.flushEnvelopesSync();
+    this.clearSession();
+    return n;
+  }
+  async rebuildEnvelopeCache() {
+    if (!this.key || !this.salt) return;
+    for (const file of this.listProtectedMarkdownFiles()) {
+      await this.cacheEnvelopeForFile(file);
+    }
+  }
+  async cacheEnvelopeForFile(file) {
+    if (!this.key || !this.salt) return;
+    try {
+      const raw = await this.app.vault.read(file);
+      const envelope = isEncryptedEnvelope(raw) ? raw : await encryptMarkdown(raw, this.key, this.salt, file.path);
+      this.envelopes.set(file.path, envelope);
+    } catch (e) {
+      console.warn("Zync: envelope cache failed", file.path, e);
+    }
+  }
+  async saveProtectedEditors() {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof import_obsidian4.MarkdownView) || !view.file) continue;
+      if (!this.isProtectedPath(view.file.path)) continue;
+      try {
+        await view.save();
+      } catch (e) {
+        console.warn("Zync: failed to save editor before lock", view.file.path, e);
+      }
+    }
+  }
+  /** Re-read from disk so the editor cannot save stale plaintext over ciphertext. */
+  async reloadProtectedEditors() {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof import_obsidian4.MarkdownView) || !view.file) continue;
+      if (!this.isProtectedPath(view.file.path)) continue;
+      try {
+        const leafAny = leaf;
+        if (typeof leafAny.rebuildView === "function") {
+          await leafAny.rebuildView();
+        } else {
+          const file = view.file;
+          const vs = leaf.getViewState();
+          await leaf.setViewState({ type: "empty", state: {} });
+          await leaf.setViewState({
+            ...vs,
+            state: { ...vs.state, file: file.path }
+          });
+        }
+      } catch (e) {
+        console.warn("Zync: failed to reload editor after lock", view.file.path, e);
+      }
+    }
   }
   /**
    * Produce encrypted bytes for upload. Never returns plaintext for protected paths.
@@ -1657,7 +1859,7 @@ var ProtectedFolderManager = class {
     }
     if (!this.isUnlocked() || !this.key || !this.salt) {
       throw new CryptoError(
-        `Refusing to upload plaintext protected file (folder locked): ${path}`
+        `Protected note is plaintext while locked (${path}). Unlock, then Lock \u2014 or run Lock and enter your password \u2014 before syncing.`
       );
     }
     const text = stringFromArrayBuffer(localBytes);
@@ -1733,6 +1935,7 @@ var ProtectedFolderManager = class {
       try {
         const raw = await this.app.vault.read(file);
         if (isEncryptedEnvelope(raw)) {
+          this.envelopes.set(file.path, raw);
           result.skipped++;
           continue;
         }
@@ -1742,6 +1945,7 @@ var ProtectedFolderManager = class {
           throw new CryptoError(`Encrypt verify failed for ${file.path}`);
         }
         await this.atomicWriteText(file, envelope);
+        this.envelopes.set(file.path, envelope);
         result.encrypted++;
       } catch (e) {
         result.errors.push(`${file.path}: ${e instanceof Error ? e.message : String(e)}`);
@@ -1766,6 +1970,7 @@ var ProtectedFolderManager = class {
         result.errors.push(`${file.path}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    await this.reloadProtectedEditors();
     return result;
   }
   /**
@@ -1817,8 +2022,10 @@ var UnlockModal = class extends import_obsidian5.Modal {
         text: "Enter the same folder name and password you use on your other device. Zync reads the encryption salt from synced notes \u2014 no file copying needed."
       });
     }
+    contentEl.addClass("zync-settings");
     if (this.askFolder) {
       new import_obsidian5.Setting(contentEl).setName("Folder").addText((text) => {
+        text.inputEl.addClass("zync-protect-input");
         text.setPlaceholder("Private").setValue(this.folder).onChange((value) => {
           this.folder = value;
         });
@@ -1826,6 +2033,7 @@ var UnlockModal = class extends import_obsidian5.Modal {
     }
     new import_obsidian5.Setting(contentEl).setName("Password").addText((text) => {
       text.inputEl.type = "password";
+      text.inputEl.addClass("zync-protect-input");
       text.inputEl.focus();
       text.onChange((value) => {
         this.password = value;
@@ -1837,7 +2045,7 @@ var UnlockModal = class extends import_obsidian5.Modal {
         }
       });
     });
-    new import_obsidian5.Setting(contentEl).addButton(
+    new import_obsidian5.Setting(contentEl).setClass("zync-protect-actions").addButton(
       (btn) => btn.setButtonText("Cancel").onClick(() => {
         this.close();
       })
@@ -1868,6 +2076,9 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
     this.settings = { ...DEFAULT_SETTINGS };
     this.intervalId = null;
     this.statusEl = null;
+    this.autoLockInFlight = null;
+    this.autoLockTimer = null;
+    this.suppressAutoLockUntil = 0;
   }
   async onload() {
     await this.loadSettings();
@@ -1879,6 +2090,7 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
       async () => this.saveSettings()
     );
     await this.protection.recoverPartials();
+    await this.warnIfPlaintextWhileLocked();
     this.s3 = new S3Client(this.settings);
     this.engine = new SyncEngine(
       this.app,
@@ -1915,17 +2127,8 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
     this.addCommand({
       id: "lock-protected-folder",
       name: "Lock protected folder",
-      callback: async () => {
-        try {
-          const result = await this.protection.lock();
-          if (result.errors.length) {
-            new import_obsidian6.Notice(`Zync: lock finished with errors \u2014 ${result.errors[0]}`);
-          } else {
-            new import_obsidian6.Notice(`Zync: locked (${result.encrypted} encrypted)`);
-          }
-        } catch (e) {
-          new import_obsidian6.Notice(`Zync: ${e instanceof Error ? e.message : String(e)}`);
-        }
+      callback: () => {
+        void this.runLockFlow();
       }
     });
     this.addCommand({
@@ -1946,11 +2149,13 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
                   folder != null ? folder : "",
                   password
                 );
+                this.noteUnlockedRecently();
                 new import_obsidian6.Notice(
                   `Zync: connected & unlocked (${result.decrypted} decrypted)`
                 );
               } else {
                 const result = await this.protection.unlock(password);
+                this.noteUnlockedRecently();
                 new import_obsidian6.Notice(`Zync: unlocked (${result.decrypted} decrypted)`);
               }
             } catch (e) {
@@ -1991,10 +2196,17 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
         void file;
       })
     );
+    this.registerAutoLockOnAppHide();
+    this.registerEnvelopeCacheUpdates();
     this.resetInterval();
     if (this.settings.syncOnLoad) {
       const t = window.setTimeout(() => {
-        void this.runSync(false);
+        void (async () => {
+          if (this.protection.isLocked() && await this.protection.hasPlaintextProtectedFiles()) {
+            return;
+          }
+          await this.runSync(false);
+        })();
       }, 2500);
       this.register(() => window.clearTimeout(t));
     }
@@ -2002,7 +2214,143 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
   onunload() {
     var _a;
     this.clearInterval();
-    (_a = this.protection) == null ? void 0 : _a.clearSession();
+    (_a = this.protection) == null ? void 0 : _a.emergencyQuitFlush();
+  }
+  registerEnvelopeCacheUpdates() {
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file instanceof import_obsidian6.TFile) this.protection.scheduleEnvelopeCache(file);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (file instanceof import_obsidian6.TFile) this.protection.scheduleEnvelopeCache(file);
+      })
+    );
+  }
+  /**
+   * Background: encrypt to disk but keep the key (resume on return).
+   * Quit: sync-flush warm envelopes + drop the key.
+   */
+  registerAutoLockOnAppHide() {
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        if (this.autoLockTimer != null) window.clearTimeout(this.autoLockTimer);
+        this.autoLockTimer = window.setTimeout(() => {
+          this.autoLockTimer = null;
+          void this.secureDiskKeepSession();
+        }, 400);
+      } else {
+        if (this.autoLockTimer != null) {
+          window.clearTimeout(this.autoLockTimer);
+          this.autoLockTimer = null;
+        }
+        void this.resumeProtectedSession();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    this.register(() => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (this.autoLockTimer != null) window.clearTimeout(this.autoLockTimer);
+    });
+    const onLeaving = () => {
+      this.protection.emergencyQuitFlush();
+    };
+    window.addEventListener("pagehide", onLeaving);
+    window.addEventListener("beforeunload", onLeaving);
+    this.register(() => {
+      window.removeEventListener("pagehide", onLeaving);
+      window.removeEventListener("beforeunload", onLeaving);
+    });
+  }
+  async secureDiskKeepSession() {
+    var _a;
+    if (!((_a = this.protection) == null ? void 0 : _a.isConfigured()) || !this.protection.isUnlocked()) return;
+    if (Date.now() < this.suppressAutoLockUntil) return;
+    if (this.autoLockInFlight) return this.autoLockInFlight;
+    this.autoLockInFlight = (async () => {
+      try {
+        const result = await this.protection.secureDisk({ clearSession: false });
+        if (result.errors.length) {
+          console.error("Zync: background secure errors", result.errors);
+        } else {
+          console.info(`Zync: secured disk (${result.encrypted} encrypted, session kept)`);
+        }
+      } catch (e) {
+        console.error("Zync: background secure failed", e);
+      } finally {
+        this.autoLockInFlight = null;
+      }
+    })();
+    return this.autoLockInFlight;
+  }
+  async resumeProtectedSession() {
+    var _a;
+    if (!((_a = this.protection) == null ? void 0 : _a.isUnlocked()) || !this.protection.isDiskSecured()) return;
+    try {
+      await this.protection.resumeSession();
+      console.info("Zync: resumed protected session after focus");
+    } catch (e) {
+      console.error("Zync: resume failed", e);
+    }
+  }
+  noteUnlockedRecently() {
+    this.suppressAutoLockUntil = Date.now() + 2500;
+  }
+  async runLockFlow() {
+    if (!this.protection.isConfigured()) {
+      new import_obsidian6.Notice("Zync: no protected folder configured");
+      return;
+    }
+    try {
+      if (this.protection.isUnlocked()) {
+        const result = await this.protection.lock();
+        this.reportLockResult(result);
+        return;
+      }
+      if (!await this.protection.hasPlaintextProtectedFiles()) {
+        new import_obsidian6.Notice("Zync: protected folder is already locked");
+        return;
+      }
+      new UnlockModal(this.app, async ({ password }) => {
+        try {
+          const result = await this.protection.lockWithPassword(password);
+          this.reportLockResult(result);
+        } catch (e) {
+          new import_obsidian6.Notice(`Zync: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }).open();
+    } catch (e) {
+      new import_obsidian6.Notice(`Zync: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  reportLockResult(result) {
+    if (result.errors.length) {
+      new import_obsidian6.Notice(`Zync: lock finished with errors \u2014 ${result.errors[0]}`);
+    } else {
+      new import_obsidian6.Notice(`Zync: locked (${result.encrypted} encrypted)`);
+    }
+  }
+  async warnIfPlaintextWhileLocked() {
+    if (!this.protection.isConfigured() || this.protection.isUnlocked()) return;
+    try {
+      if (await this.protection.hasPlaintextProtectedFiles()) {
+        new import_obsidian6.Notice(
+          "Zync: protected notes were left plaintext after a previous quit. Enter password to encrypt them.",
+          1e4
+        );
+        new UnlockModal(this.app, async ({ password }) => {
+          try {
+            const result = await this.protection.lockWithPassword(password);
+            this.reportLockResult(result);
+          } catch (e) {
+            new import_obsidian6.Notice(`Zync: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }).open();
+      }
+    } catch (e) {
+      console.warn("Zync: plaintext check failed", e);
+    }
   }
   async loadSettings() {
     const data = await this.loadData();

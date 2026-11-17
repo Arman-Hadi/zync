@@ -10,7 +10,7 @@ Works with Cloudflare R2, AWS S3, Backblaze B2, MinIO, and other SigV4 S3 APIs. 
 - Upload, download, and delete propagation across devices
 - Conflict copies when both sides edited the same file
 - Ignore globs (`.obsidian` and `.trash` are always skipped)
-- Optional **protected folder**: password-lock one folder; Markdown notes are AES-256-GCM encrypted on disk when locked and always encrypted in S3
+- Optional **protected folder**: password-lock one folder; Markdown notes are AES-256-GCM encrypted on disk when locked (and auto-encrypted when Obsidian closes) and always encrypted in S3
 - Mobile-safe networking via Obsidian `requestUrl` + Web Crypto SigV4
 
 ## Install

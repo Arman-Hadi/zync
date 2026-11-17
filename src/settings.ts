@@ -175,13 +175,17 @@ export class ZyncSettingTab extends PluginSettingTab {
         heading: "Protected folder",
         items: [
           {
-            name: "Status",
+            name: "Protected folder",
             desc: this.protectionStatusText(),
-          },
-          {
-            name: "Folder",
-            desc: "One vault folder whose Markdown notes are encrypted when locked. Synced to S3 only in encrypted form.",
-            render: (setting) => this.renderProtectedFolderControls(setting),
+            render: (setting) => {
+              const parent = setting.settingEl.parentElement;
+              if (parent) {
+                setting.settingEl.remove();
+                this.renderProtectedFolderSection(parent, false);
+              } else {
+                this.renderProtectedFolderControlsInto(setting.settingEl);
+              }
+            },
           },
         ],
       },
@@ -344,25 +348,22 @@ export class ZyncSettingTab extends PluginSettingTab {
     }
     const folder = p.getFolder();
     if (p.isUnlocked()) {
-      return `"${folder}" is unlocked. Notes are plaintext on disk; sync still uploads ciphertext only.`;
+      return `"${folder}" is unlocked. Leaving Obsidian encrypts notes on disk automatically; you only need the password to unlock again.`;
     }
     return `"${folder}" is locked. Markdown notes inside are encrypted on disk and in S3.`;
   }
 
-  private renderProtectedFolderSection(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName("Protected folder").setHeading();
+  private renderProtectedFolderSection(containerEl: HTMLElement, withHeading = true): void {
+    if (withHeading) {
+      new Setting(containerEl).setName("Protected folder").setHeading();
+    }
 
     new Setting(containerEl).setName("Status").setDesc(this.protectionStatusText());
-
-    const folderSetting = new Setting(containerEl)
-      .setName("Folder")
-      .setDesc(
-        "One vault folder whose Markdown notes are encrypted when locked. Synced to S3 only in encrypted form.",
-      );
-    this.renderProtectedFolderControls(folderSetting);
+    this.renderProtectedFolderControlsInto(containerEl);
   }
 
-  private renderProtectedFolderControls(setting: Setting): void {
+  /** Stack folder / password / actions as separate rows so mobile stays usable. */
+  private renderProtectedFolderControlsInto(containerEl: HTMLElement): void {
     const configured = this.plugin.protection.isConfigured();
     const unlocked = this.plugin.protection.isUnlocked();
 
@@ -370,139 +371,168 @@ export class ZyncSettingTab extends PluginSettingTab {
       if (!this.draftFolder) {
         this.draftFolder = this.plugin.settings.protectedFolder || "";
       }
-      setting.addText((text) => {
-        text
-          .setPlaceholder("Private")
-          .setValue(this.draftFolder)
-          .onChange((value) => {
-            this.draftFolder = value;
-          });
-      });
-      setting.addText((text) => {
-        text.inputEl.type = "password";
-        text.setPlaceholder("Password").setValue(this.draftPassword).onChange((value) => {
-          this.draftPassword = value;
+
+      new Setting(containerEl)
+        .setName("Folder")
+        .setDesc(
+          "Vault folder to protect (same name on every device). Only Markdown notes inside are encrypted.",
+        )
+        .addText((text) => {
+          text.inputEl.addClass("zync-protect-input");
+          text
+            .setPlaceholder("Private")
+            .setValue(this.draftFolder)
+            .onChange((value) => {
+              this.draftFolder = value;
+            });
         });
-      });
-      setting.addButton((btn) =>
-        btn.setButtonText("Enable & encrypt").setCta().onClick(async () => {
-          btn.setDisabled(true);
-          try {
-            const result = await this.plugin.protection.enable(
-              this.draftFolder,
-              this.draftPassword,
-            );
-            this.draftPassword = "";
-            if (result.errors.length) {
-              new Notice(`Zync: enabled with errors — ${result.errors[0]}`);
-            } else if (result.encrypted === 0 && result.skipped > 0) {
-              new Notice(
-                `Zync: linked existing protected folder (${result.skipped} notes, locked)`,
+
+      new Setting(containerEl)
+        .setName("Password")
+        .setDesc("Never stored. Needed to unlock on this device.")
+        .addText((text) => {
+          text.inputEl.type = "password";
+          text.inputEl.addClass("zync-protect-input");
+          text.setPlaceholder("Password").setValue(this.draftPassword).onChange((value) => {
+            this.draftPassword = value;
+          });
+        });
+
+      new Setting(containerEl)
+        .setName("Actions")
+        .setClass("zync-protect-actions")
+        .addButton((btn) =>
+          btn.setButtonText("Enable & encrypt").setCta().onClick(async () => {
+            btn.setDisabled(true);
+            try {
+              const result = await this.plugin.protection.enable(
+                this.draftFolder,
+                this.draftPassword,
               );
-            } else {
-              new Notice(
-                `Zync: protected folder enabled (${result.encrypted} encrypted, locked)`,
-              );
+              this.draftPassword = "";
+              if (result.errors.length) {
+                new Notice(`Zync: enabled with errors — ${result.errors[0]}`);
+              } else if (result.encrypted === 0 && result.skipped > 0) {
+                new Notice(
+                  `Zync: linked existing protected folder (${result.skipped} notes, locked)`,
+                );
+              } else {
+                new Notice(
+                  `Zync: protected folder enabled (${result.encrypted} encrypted, locked)`,
+                );
+              }
+              this.display();
+            } catch (e) {
+              new Notice(`Zync: ${errMessage(e)}`);
+            } finally {
+              btn.setDisabled(false);
             }
-            this.display();
-          } catch (e) {
-            new Notice(`Zync: ${errMessage(e)}`);
-          } finally {
-            btn.setDisabled(false);
-          }
-        }),
-      );
-      setting.addButton((btn) =>
-        btn.setButtonText("Connect & unlock").onClick(async () => {
-          btn.setDisabled(true);
-          try {
+          }),
+        )
+        .addButton((btn) =>
+          btn.setButtonText("Connect & unlock").onClick(async () => {
+            btn.setDisabled(true);
+            try {
             const result = await this.plugin.protection.connectAndUnlock(
               this.draftFolder,
               this.draftPassword,
             );
             this.draftPassword = "";
+            this.plugin.noteUnlockedRecently();
             new Notice(
               `Zync: connected & unlocked (${result.decrypted} decrypted)`,
             );
             this.display();
-          } catch (e) {
-            new Notice(`Zync: ${errMessage(e)}`);
-          } finally {
-            btn.setDisabled(false);
-          }
-        }),
-      );
+            } catch (e) {
+              new Notice(`Zync: ${errMessage(e)}`);
+            } finally {
+              btn.setDisabled(false);
+            }
+          }),
+        );
       return;
     }
 
     if (unlocked) {
-      setting.addButton((btn) =>
-        btn.setButtonText("Lock").setCta().onClick(async () => {
-          btn.setDisabled(true);
-          try {
-            const result = await this.plugin.protection.lock();
-            if (result.errors.length) {
-              new Notice(`Zync: lock errors — ${result.errors[0]}`);
-            } else {
-              new Notice(`Zync: locked (${result.encrypted} encrypted)`);
+      new Setting(containerEl)
+        .setName("Actions")
+        .setDesc(`Folder: ${this.plugin.protection.getFolder()}`)
+        .setClass("zync-protect-actions")
+        .addButton((btn) =>
+          btn.setButtonText("Lock").setCta().onClick(async () => {
+            btn.setDisabled(true);
+            try {
+              await this.plugin.runLockFlow();
+              this.display();
+            } finally {
+              btn.setDisabled(false);
             }
-            this.display();
-          } catch (e) {
-            new Notice(`Zync: ${errMessage(e)}`);
-          } finally {
-            btn.setDisabled(false);
-          }
-        }),
-      );
-      setting.addButton((btn) =>
-        btn.setButtonText("Disable").setWarning().onClick(async () => {
-          btn.setDisabled(true);
-          try {
-            await this.plugin.protection.disable();
-            this.draftFolder = "";
-            this.draftPassword = "";
-            new Notice("Zync: protection disabled; notes decrypted");
-            this.display();
-          } catch (e) {
-            new Notice(`Zync: ${errMessage(e)}`);
-          } finally {
-            btn.setDisabled(false);
-          }
-        }),
-      );
+          }),
+        )
+        .addButton((btn) =>
+          btn.setButtonText("Disable").setWarning().onClick(async () => {
+            btn.setDisabled(true);
+            try {
+              await this.plugin.protection.disable();
+              this.draftFolder = "";
+              this.draftPassword = "";
+              new Notice("Zync: protection disabled; notes decrypted");
+              this.display();
+            } catch (e) {
+              new Notice(`Zync: ${errMessage(e)}`);
+            } finally {
+              btn.setDisabled(false);
+            }
+          }),
+        );
       return;
     }
 
     // Locked
-    setting.addText((text) => {
-      text.inputEl.type = "password";
-      text
-        .setPlaceholder("Password")
-        .setValue(this.draftUnlockPassword)
-        .onChange((value) => {
-          this.draftUnlockPassword = value;
-        });
-    });
-    setting.addButton((btn) =>
-      btn.setButtonText("Unlock").setCta().onClick(async () => {
-        btn.setDisabled(true);
-        try {
-          await this.plugin.protection.unlock(this.draftUnlockPassword);
-          this.draftUnlockPassword = "";
-          new Notice("Zync: protected folder unlocked");
-          this.display();
-        } catch (e) {
-          new Notice(`Zync: ${errMessage(e)}`);
-        } finally {
-          btn.setDisabled(false);
-        }
-      }),
-    );
-    setting.addButton((btn) =>
-      btn.setButtonText("Lock").onClick(async () => {
-        new Notice("Zync: folder is already locked");
-      }),
-    );
+    new Setting(containerEl)
+      .setName("Password")
+      .setDesc(`Unlock "${this.plugin.protection.getFolder()}" on this device.`)
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text.inputEl.addClass("zync-protect-input");
+        text
+          .setPlaceholder("Password")
+          .setValue(this.draftUnlockPassword)
+          .onChange((value) => {
+            this.draftUnlockPassword = value;
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Actions")
+      .setClass("zync-protect-actions")
+      .addButton((btn) =>
+        btn.setButtonText("Unlock").setCta().onClick(async () => {
+          btn.setDisabled(true);
+          try {
+            await this.plugin.protection.unlock(this.draftUnlockPassword);
+            this.draftUnlockPassword = "";
+            this.plugin.noteUnlockedRecently();
+            new Notice("Zync: protected folder unlocked");
+            this.display();
+          } catch (e) {
+            new Notice(`Zync: ${errMessage(e)}`);
+          } finally {
+            btn.setDisabled(false);
+          }
+        }),
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Lock / encrypt").onClick(async () => {
+          btn.setDisabled(true);
+          try {
+            await this.plugin.runLockFlow();
+            this.display();
+          } finally {
+            btn.setDisabled(false);
+          }
+        }),
+      );
   }
 }
 
