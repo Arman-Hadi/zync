@@ -251,7 +251,7 @@ var S3Client = class {
     }
   }
   async listAll() {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const prefix = trimSlashes(this.settings.prefix);
     const prefixWithSlash = prefix ? prefix + "/" : "";
     const out = [];
@@ -268,21 +268,20 @@ var S3Client = class {
       if (res.status >= 300) {
         throw s3Fail("list", res.status);
       }
-      const xml = res.text;
-      const contents = Array.from(
-        xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)
-      );
-      for (const match of contents) {
-        const block = (_a = match[1]) != null ? _a : "";
+      const xml = String((_a = res.text) != null ? _a : "");
+      const contentsRe = /<Contents>([\s\S]*?)<\/Contents>/g;
+      let match;
+      while ((match = contentsRe.exec(xml)) !== null) {
+        const block = (_b = match[1]) != null ? _b : "";
         const key = textOf(block, "Key");
         if (!key) continue;
         if (key.endsWith("/")) continue;
         const path = keyToPath(this.settings.prefix, key);
         if (!path) continue;
         if (path === "_zync/manifest.json" || path.startsWith("_zync/")) continue;
-        const sizeText = (_b = textOf(block, "Size")) != null ? _b : "0";
-        const modifiedText = (_c = textOf(block, "LastModified")) != null ? _c : "";
-        const etagText = (_d = textOf(block, "ETag")) != null ? _d : "";
+        const sizeText = (_c = textOf(block, "Size")) != null ? _c : "0";
+        const modifiedText = (_d = textOf(block, "LastModified")) != null ? _d : "";
+        const etagText = (_e = textOf(block, "ETag")) != null ? _e : "";
         out.push({
           key,
           path,
@@ -427,8 +426,10 @@ var MetaStore = class {
 // src/local/vault-io.ts
 var import_obsidian2 = require("obsidian");
 function defaultIgnorePatterns(configDir) {
-  const cfg = configDir.replace(/^\/+|\/+$/g, "") || ".obsidian";
-  return [`${cfg}/**`, ".trash/**", "**/.DS_Store", "**/Thumbs.db"];
+  const cfg = configDir.replace(/^\/+|\/+$/g, "");
+  const patterns = [".trash/**", "**/.DS_Store", "**/Thumbs.db"];
+  if (cfg) patterns.unshift(`${cfg}/**`);
+  return patterns;
 }
 function parseIgnorePatterns(raw, configDir) {
   const user = raw.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
@@ -641,7 +642,7 @@ ${b64}
 `;
 }
 function isEncryptedEnvelope(text) {
-  const trimmed = text.replace(/^\uFEFF/, "").trimStart();
+  const trimmed = text.replace(/^\uFEFF/, "").replace(/^\s+/, "");
   return trimmed.startsWith(MAGIC_LINE);
 }
 function isEncryptedBytes(data) {
@@ -732,18 +733,15 @@ async function verifyPassword(key, nonceHex, cipherHex) {
 }
 var BufferCompat = {
   toBase64(bytes) {
-    if (typeof Buffer !== "undefined") {
-      return Buffer.from(bytes).toString("base64");
-    }
+    const chunk = 32768;
     let s = "";
-    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    for (let i = 0; i < bytes.length; i += chunk) {
+      s += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
     return btoa(s);
   },
   fromBase64(b64) {
     const clean = b64.replace(/\s+/g, "");
-    if (typeof Buffer !== "undefined") {
-      return new Uint8Array(Buffer.from(clean, "base64"));
-    }
     const bin = atob(clean);
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -1388,7 +1386,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
                 `Zync: protected folder enabled (${result.encrypted} encrypted, locked)`
               );
             }
-            this.display();
+            this.refreshSettings();
           } catch (e) {
             new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
           } finally {
@@ -1408,7 +1406,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
             new import_obsidian3.Notice(
               `Zync: connected & unlocked (${result.decrypted} decrypted)`
             );
-            this.display();
+            this.refreshSettings();
           } catch (e) {
             new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
           } finally {
@@ -1424,27 +1422,29 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
           btn.setDisabled(true);
           try {
             await this.plugin.runLockFlow();
-            this.display();
+            this.refreshSettings();
           } finally {
             btn.setDisabled(false);
           }
         })
-      ).addButton(
-        (btn) => btn.setButtonText("Disable").setWarning().onClick(async () => {
+      ).addButton((btn) => {
+        btn.setButtonText("Disable");
+        if ((0, import_obsidian3.requireApiVersion)("1.13.0")) btn.setDestructive();
+        return btn.onClick(async () => {
           btn.setDisabled(true);
           try {
             await this.plugin.protection.disable();
             this.draftFolder = "";
             this.draftPassword = "";
             new import_obsidian3.Notice("Zync: protection disabled; notes decrypted");
-            this.display();
+            this.refreshSettings();
           } catch (e) {
             new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
           } finally {
             btn.setDisabled(false);
           }
-        })
-      );
+        });
+      });
       return;
     }
     new import_obsidian3.Setting(containerEl).setName("Password").setDesc(`Unlock "${this.plugin.protection.getFolder()}" on this device.`).addText((text) => {
@@ -1462,7 +1462,7 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
           this.draftUnlockPassword = "";
           this.plugin.noteUnlockedRecently();
           new import_obsidian3.Notice("Zync: protected folder unlocked");
-          this.display();
+          this.refreshSettings();
         } catch (e) {
           new import_obsidian3.Notice(`Zync: ${errMessage(e)}`);
         } finally {
@@ -1474,12 +1474,20 @@ var ZyncSettingTab = class extends import_obsidian3.PluginSettingTab {
         btn.setDisabled(true);
         try {
           await this.plugin.runLockFlow();
-          this.display();
+          this.refreshSettings();
         } finally {
           btn.setDisabled(false);
         }
       })
     );
+  }
+  /** Refresh after protect actions: update() on 1.13+, else rebuild via display(). */
+  refreshSettings() {
+    if (typeof this.update === "function") {
+      this.update();
+    } else {
+      this.display();
+    }
   }
 };
 function errMessage(e) {
@@ -1530,7 +1538,7 @@ var ProtectedFolderManager = class {
     this.envelopes.clear();
     this.diskSecured = false;
     if (this.cacheTimer != null) {
-      clearTimeout(this.cacheTimer);
+      window.clearTimeout(this.cacheTimer);
       this.cacheTimer = null;
     }
   }
@@ -1760,8 +1768,8 @@ var ProtectedFolderManager = class {
   /** Keep envelope cache fresh while editing (called on vault modify). */
   scheduleEnvelopeCache(file) {
     if (!this.isUnlocked() || !this.isProtectedPath(file.path)) return;
-    if (this.cacheTimer != null) clearTimeout(this.cacheTimer);
-    this.cacheTimer = setTimeout(() => {
+    if (this.cacheTimer != null) window.clearTimeout(this.cacheTimer);
+    this.cacheTimer = window.setTimeout(() => {
       this.cacheTimer = null;
       void this.cacheEnvelopeForFile(file);
     }, 120);
@@ -1772,6 +1780,7 @@ var ProtectedFolderManager = class {
    */
   flushEnvelopesSync() {
     if (this.envelopes.size === 0) return 0;
+    if (!import_obsidian4.Platform.isDesktopApp) return 0;
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof import_obsidian4.FileSystemAdapter)) return 0;
     const fs = require("fs");
@@ -1784,7 +1793,6 @@ var ProtectedFolderManager = class {
         fs.writeFileSync(full, body, "utf8");
         written++;
       } catch (e) {
-        console.error("Zync: sync flush failed", rel, e);
       }
     }
     if (written > 0) this.diskSecured = true;
@@ -2234,7 +2242,7 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
    */
   registerAutoLockOnAppHide() {
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") {
+      if (activeDocument.visibilityState === "hidden") {
         if (this.autoLockTimer != null) window.clearTimeout(this.autoLockTimer);
         this.autoLockTimer = window.setTimeout(() => {
           this.autoLockTimer = null;
@@ -2248,9 +2256,9 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
         void this.resumeProtectedSession();
       }
     };
-    document.addEventListener("visibilitychange", onVisibility);
+    activeDocument.addEventListener("visibilitychange", onVisibility);
     this.register(() => {
-      document.removeEventListener("visibilitychange", onVisibility);
+      activeDocument.removeEventListener("visibilitychange", onVisibility);
       if (this.autoLockTimer != null) window.clearTimeout(this.autoLockTimer);
     });
     const onLeaving = () => {
@@ -2273,8 +2281,6 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
         const result = await this.protection.secureDisk({ clearSession: false });
         if (result.errors.length) {
           console.error("Zync: background secure errors", result.errors);
-        } else {
-          console.info(`Zync: secured disk (${result.encrypted} encrypted, session kept)`);
         }
       } catch (e) {
         console.error("Zync: background secure failed", e);
@@ -2289,7 +2295,6 @@ var ZyncPlugin = class extends import_obsidian6.Plugin {
     if (!((_a = this.protection) == null ? void 0 : _a.isUnlocked()) || !this.protection.isDiskSecured()) return;
     try {
       await this.protection.resumeSession();
-      console.info("Zync: resumed protected session after focus");
     } catch (e) {
       console.error("Zync: resume failed", e);
     }

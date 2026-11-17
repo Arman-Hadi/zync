@@ -197,7 +197,7 @@ export default class ZyncPlugin extends Plugin {
    */
   private registerAutoLockOnAppHide(): void {
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") {
+      if (activeDocument.visibilityState === "hidden") {
         if (this.autoLockTimer != null) window.clearTimeout(this.autoLockTimer);
         // Ignore tiny focus flickers; still short enough to run before a real quit.
         this.autoLockTimer = window.setTimeout(() => {
@@ -212,9 +212,9 @@ export default class ZyncPlugin extends Plugin {
         void this.resumeProtectedSession();
       }
     };
-    document.addEventListener("visibilitychange", onVisibility);
+    activeDocument.addEventListener("visibilitychange", onVisibility);
     this.register(() => {
-      document.removeEventListener("visibilitychange", onVisibility);
+      activeDocument.removeEventListener("visibilitychange", onVisibility);
       if (this.autoLockTimer != null) window.clearTimeout(this.autoLockTimer);
     });
 
@@ -240,8 +240,6 @@ export default class ZyncPlugin extends Plugin {
         const result = await this.protection.secureDisk({ clearSession: false });
         if (result.errors.length) {
           console.error("Zync: background secure errors", result.errors);
-        } else {
-          console.info(`Zync: secured disk (${result.encrypted} encrypted, session kept)`);
         }
       } catch (e) {
         console.error("Zync: background secure failed", e);
@@ -256,7 +254,6 @@ export default class ZyncPlugin extends Plugin {
     if (!this.protection?.isUnlocked() || !this.protection.isDiskSecured()) return;
     try {
       await this.protection.resumeSession();
-      console.info("Zync: resumed protected session after focus");
     } catch (e) {
       console.error("Zync: resume failed", e);
     }

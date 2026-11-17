@@ -3,6 +3,7 @@ import {
   Notice,
   PluginSettingTab,
   Setting,
+  requireApiVersion,
   type SettingDefinitionItem,
 } from "obsidian";
 import type ZyncPlugin from "./main";
@@ -421,7 +422,7 @@ export class ZyncSettingTab extends PluginSettingTab {
                   `Zync: protected folder enabled (${result.encrypted} encrypted, locked)`,
                 );
               }
-              this.display();
+              this.refreshSettings();
             } catch (e) {
               new Notice(`Zync: ${errMessage(e)}`);
             } finally {
@@ -442,7 +443,7 @@ export class ZyncSettingTab extends PluginSettingTab {
             new Notice(
               `Zync: connected & unlocked (${result.decrypted} decrypted)`,
             );
-            this.display();
+            this.refreshSettings();
             } catch (e) {
               new Notice(`Zync: ${errMessage(e)}`);
             } finally {
@@ -463,28 +464,30 @@ export class ZyncSettingTab extends PluginSettingTab {
             btn.setDisabled(true);
             try {
               await this.plugin.runLockFlow();
-              this.display();
+              this.refreshSettings();
             } finally {
               btn.setDisabled(false);
             }
           }),
         )
-        .addButton((btn) =>
-          btn.setButtonText("Disable").setWarning().onClick(async () => {
+        .addButton((btn) => {
+          btn.setButtonText("Disable");
+          if (requireApiVersion("1.13.0")) btn.setDestructive();
+          return btn.onClick(async () => {
             btn.setDisabled(true);
             try {
               await this.plugin.protection.disable();
               this.draftFolder = "";
               this.draftPassword = "";
               new Notice("Zync: protection disabled; notes decrypted");
-              this.display();
+              this.refreshSettings();
             } catch (e) {
               new Notice(`Zync: ${errMessage(e)}`);
             } finally {
               btn.setDisabled(false);
             }
-          }),
-        );
+          });
+        });
       return;
     }
 
@@ -514,7 +517,7 @@ export class ZyncSettingTab extends PluginSettingTab {
             this.draftUnlockPassword = "";
             this.plugin.noteUnlockedRecently();
             new Notice("Zync: protected folder unlocked");
-            this.display();
+            this.refreshSettings();
           } catch (e) {
             new Notice(`Zync: ${errMessage(e)}`);
           } finally {
@@ -527,12 +530,21 @@ export class ZyncSettingTab extends PluginSettingTab {
           btn.setDisabled(true);
           try {
             await this.plugin.runLockFlow();
-            this.display();
+            this.refreshSettings();
           } finally {
             btn.setDisabled(false);
           }
         }),
       );
+  }
+
+  /** Refresh after protect actions: update() on 1.13+, else rebuild via display(). */
+  private refreshSettings(): void {
+    if (typeof this.update === "function") {
+      this.update();
+    } else {
+      this.display();
+    }
   }
 }
 

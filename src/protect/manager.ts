@@ -1,5 +1,5 @@
 import type { App } from "obsidian";
-import { FileSystemAdapter, MarkdownView, TFile, normalizePath } from "obsidian";
+import { FileSystemAdapter, MarkdownView, Platform, TFile, normalizePath } from "obsidian";
 import type { ZyncSettings } from "../types";
 import {
   CryptoError,
@@ -43,7 +43,7 @@ export class ProtectedFolderManager {
   private envelopes = new Map<string, string>();
   /** Disk has ciphertext but the key may still be in memory (backgrounded). */
   private diskSecured = false;
-  private cacheTimer: ReturnType<typeof setTimeout> | null = null;
+  private cacheTimer: number | null = null;
 
   constructor(
     private app: App,
@@ -89,7 +89,7 @@ export class ProtectedFolderManager {
     this.envelopes.clear();
     this.diskSecured = false;
     if (this.cacheTimer != null) {
-      clearTimeout(this.cacheTimer);
+      window.clearTimeout(this.cacheTimer);
       this.cacheTimer = null;
     }
   }
@@ -367,8 +367,8 @@ export class ProtectedFolderManager {
   /** Keep envelope cache fresh while editing (called on vault modify). */
   scheduleEnvelopeCache(file: TFile): void {
     if (!this.isUnlocked() || !this.isProtectedPath(file.path)) return;
-    if (this.cacheTimer != null) clearTimeout(this.cacheTimer);
-    this.cacheTimer = setTimeout(() => {
+    if (this.cacheTimer != null) window.clearTimeout(this.cacheTimer);
+    this.cacheTimer = window.setTimeout(() => {
       this.cacheTimer = null;
       void this.cacheEnvelopeForFile(file);
     }, 120);
@@ -380,14 +380,14 @@ export class ProtectedFolderManager {
    */
   flushEnvelopesSync(): number {
     if (this.envelopes.size === 0) return 0;
+    // Mobile has no sync Node path; visibility async lock covers that.
+    if (!Platform.isDesktopApp) return 0;
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) return 0;
 
-    // Desktop Node fs — mobile has no sync path; visibility async lock covers that.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require("fs") as typeof import("fs");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pathMod = require("path") as typeof import("path");
+    // Desktop-only: sync write so quit/pagehide can persist ciphertext without async vault I/O.
+    const fs = require("fs") as { writeFileSync: (path: string, data: string, encoding: string) => void };
+    const pathMod = require("path") as { join: (...parts: string[]) => string };
     const base = adapter.getBasePath();
     let written = 0;
     for (const [rel, body] of this.envelopes) {
@@ -395,8 +395,8 @@ export class ProtectedFolderManager {
         const full = pathMod.join(base, ...rel.split("/"));
         fs.writeFileSync(full, body, "utf8");
         written++;
-      } catch (e) {
-        console.error("Zync: sync flush failed", rel, e);
+      } catch {
+        // Best-effort quit flush; async lock already attempted.
       }
     }
     if (written > 0) this.diskSecured = true;

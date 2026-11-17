@@ -9,7 +9,7 @@ Works with Cloudflare R2, AWS S3, Backblaze B2, MinIO, and other SigV4 S3 APIs. 
 - Manual sync (ribbon + command) and optional interval / sync-on-load
 - Upload, download, and delete propagation across devices
 - Conflict copies when both sides edited the same file
-- Ignore globs (`.obsidian` and `.trash` are always skipped)
+- Ignore globs (the vault config folder via `Vault.configDir`, and `.trash`, are always skipped)
 - Optional **protected folder**: password-lock one folder; Markdown notes are AES-256-GCM encrypted on disk when locked (and auto-encrypted when Obsidian closes) and always encrypted in S3
 - Mobile-safe networking via Obsidian `requestUrl` + Web Crypto SigV4
 
@@ -53,6 +53,8 @@ Optional **key prefix** lets several vaults share one bucket.
 - If both sides changed the same path: renames local to `name (conflict YYYYMMDD-HHMM).ext` and downloads remote
 
 **Privacy:** by default, files are stored in your bucket in plain form. Notes inside an optional protected folder are encrypted with AES-256-GCM before upload (password never leaves the device). Credentials stay in the vault’s plugin data (`data.json`) on each device.
+
+**Desktop filesystem access:** on desktop only, when Obsidian quits or hides while a protected folder is unlocked, Zync may use Node `fs` to synchronously write already-encrypted note contents under the vault path so plaintext is not left on disk if the process dies mid-async save. Mobile never uses Node `fs`.
 
 ## Commands
 

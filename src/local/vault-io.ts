@@ -2,8 +2,10 @@ import { App, TFile, normalizePath } from "obsidian";
 import type { LocalFileInfo } from "../types";
 
 export function defaultIgnorePatterns(configDir: string): string[] {
-  const cfg = configDir.replace(/^\/+|\/+$/g, "") || ".obsidian";
-  return [`${cfg}/**`, ".trash/**", "**/.DS_Store", "**/Thumbs.db"];
+  const cfg = configDir.replace(/^\/+|\/+$/g, "");
+  const patterns = [".trash/**", "**/.DS_Store", "**/Thumbs.db"];
+  if (cfg) patterns.unshift(`${cfg}/**`);
+  return patterns;
 }
 
 export function parseIgnorePatterns(raw: string, configDir: string): string[] {

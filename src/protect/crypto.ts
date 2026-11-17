@@ -155,7 +155,7 @@ export function serializeEnvelope(binary: Uint8Array): string {
 }
 
 export function isEncryptedEnvelope(text: string): boolean {
-  const trimmed = text.replace(/^\uFEFF/, "").trimStart();
+  const trimmed = text.replace(/^\uFEFF/, "").replace(/^\s+/, "");
   return trimmed.startsWith(MAGIC_LINE);
 }
 
@@ -275,21 +275,18 @@ export async function verifyPassword(
   }
 }
 
-/** Base64 helpers that work in browser (Obsidian) and Node tests. */
+/** Base64 helpers for Obsidian (browser) and Node tests — no Node Buffer. */
 export const BufferCompat = {
   toBase64(bytes: Uint8Array): string {
-    if (typeof Buffer !== "undefined") {
-      return Buffer.from(bytes).toString("base64");
-    }
+    const chunk = 0x8000;
     let s = "";
-    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    for (let i = 0; i < bytes.length; i += chunk) {
+      s += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
     return btoa(s);
   },
   fromBase64(b64: string): Uint8Array {
     const clean = b64.replace(/\s+/g, "");
-    if (typeof Buffer !== "undefined") {
-      return new Uint8Array(Buffer.from(clean, "base64"));
-    }
     const bin = atob(clean);
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -299,7 +296,7 @@ export const BufferCompat = {
 
 export function arrayBufferFromString(s: string): ArrayBuffer {
   const bytes = textEncoder.encode(s);
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
 export function stringFromArrayBuffer(buf: ArrayBuffer): string {

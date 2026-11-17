@@ -148,12 +148,11 @@ export class S3Client {
         throw s3Fail("list", res.status);
       }
 
-      const xml: string = res.text;
-      const contents: RegExpMatchArray[] = Array.from(
-        xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g),
-      );
-      for (const match of contents) {
-        const block: string = match[1] ?? "";
+      const xml = String(res.text ?? "");
+      const contentsRe = /<Contents>([\s\S]*?)<\/Contents>/g;
+      let match: RegExpExecArray | null;
+      while ((match = contentsRe.exec(xml)) !== null) {
+        const block = match[1] ?? "";
         const key = textOf(block, "Key");
         if (!key) continue;
         // Skip directory placeholders and internal manifest
